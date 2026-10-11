@@ -40,6 +40,13 @@ class IllegalTransitionError(Exception):
     """Raised when an ordered stage transition is not permitted."""
 
 
+# Explicit retry edges: the ONLY non-ordered moves allowed besides reset.
+# The Bouncer rejecting a photo returns the chat to AWAITING_PHOTO.
+RETRY_TRANSITIONS: frozenset[tuple[Stage, Stage]] = frozenset(
+    {(Stage.BOUNCER_CHECK, Stage.AWAITING_PHOTO)}
+)
+
+
 def next_stage(current: Stage) -> Stage | None:
     """Return the successor stage, or ``None`` if ``current`` is the last stage."""
     index = PIPELINE_ORDER.index(current)
@@ -49,8 +56,10 @@ def next_stage(current: Stage) -> Stage | None:
 
 
 def can_transition(src: Stage, dst: Stage) -> bool:
-    """Reset to ``GREETING`` is always allowed; otherwise only the ordered step."""
+    """Reset to ``GREETING``, the ordered step, or an explicit retry edge is legal."""
     if dst is Stage.GREETING:
+        return True
+    if (src, dst) in RETRY_TRANSITIONS:
         return True
     return next_stage(src) is dst
 

@@ -25,3 +25,14 @@ def test_token_loads_and_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.telegram_bot_token.get_secret_value() == "tok-123"
     assert "tok-123" not in repr(settings)
+
+
+def test_require_gemini_key_raises_when_missing() -> None:
+    settings = Settings(telegram_bot_token="tok", gemini_api_key=None)
+    with pytest.raises(ConfigurationError):
+        settings.require_gemini_key()
+
+
+def test_require_gemini_key_returns_value() -> None:
+    settings = Settings(telegram_bot_token="tok", gemini_api_key="the-key")
+    assert settings.require_gemini_key() == "the-key"

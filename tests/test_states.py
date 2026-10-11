@@ -63,3 +63,17 @@ def test_session_state_defaults_to_greeting() -> None:
     state = SessionState(chat_id=42)
     assert state.chat_id == 42
     assert state.stage is Stage.GREETING
+
+
+def test_bouncer_flow_transitions_are_allowed() -> None:
+    assert can_transition(Stage.AWAITING_PHOTO, Stage.BOUNCER_CHECK)
+    assert can_transition(Stage.BOUNCER_CHECK, Stage.INTERVIEW)
+    # The single Bouncer rejection retry edge:
+    assert can_transition(Stage.BOUNCER_CHECK, Stage.AWAITING_PHOTO)
+
+
+def test_unrelated_backward_moves_stay_illegal() -> None:
+    with pytest.raises(IllegalTransitionError):
+        assert_transition(Stage.INTERVIEW, Stage.AWAITING_PHOTO)
+    with pytest.raises(IllegalTransitionError):
+        assert_transition(Stage.CONVERTING, Stage.BOUNCER_CHECK)

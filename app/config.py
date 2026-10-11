@@ -41,3 +41,11 @@ class Settings(BaseModel):
             telegram_bot_token=SecretStr(token),
             gemini_api_key=SecretStr(gemini_key) if gemini_key else None,
         )
+
+    def require_gemini_key(self) -> str:
+        """Return the Gemini API key as a string or raise if missing."""
+        if self.gemini_api_key is None:
+            raise ConfigurationError(
+                "GEMINI_API_KEY is not set. Add it to your .env file."
+            )
+        return self.gemini_api_key.get_secret_value()
