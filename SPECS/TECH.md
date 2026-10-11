@@ -7,6 +7,7 @@ Python 3, running locally in Codio during development.
 - Telegram API via **`python-telegram-bot`** (v21+) using LONG POLLING, not webhooks. Rationale: long polling reaches outbound to Telegram over HTTPS, works behind NAT/firewall on localhost, needs no public IP, SSL cert, or ngrok. Do not implement a webhook server.
 - Transports and contracts: Pydantic v2 models at the boundaries. `Settings` (loaded from `.env`, secrets held as `SecretStr`), `ChatInput` (a normalised, typed view of every inbound update, with `chat_id` normalised to `int`), and `SessionState` (per-chat stage). Untrusted input is parsed/validated at the edge, never trusted raw.
 - Google ADK (Agent Development Kit) to structure the pipeline as discrete specialized agents in a clear state machine, not ad-hoc chained API calls.
+  - **In use (Feature 2):** the Bouncer is a real ADK `LlmAgent` (`gemini-3.1-flash-lite`, multimodal) behind a typed interface `Bouncer.inspect(image_path: Path) -> BouncerVerdict` (`app/bouncer.py`); `google-adk` is pinned in `requirements.txt`. The verdict is parsed via a Pydantic `output_schema` (schema, not regex). Unit tests inject a fake runner, so no network is used.
 - Gemini 3.1 models:
   - Bouncer, Interviewer, Scripter: gemini-3.1-flash-lite
   - Converter: gemini-3.1-flash-image
@@ -25,7 +26,8 @@ The Interviewer agent doubles as the orchestrator.
 
 ## State machine stages (per chat)
 GREETING to AWAITING_PHOTO to BOUNCER_CHECK to INTERVIEW (5 to 7 Q) to CONVERTING to SCRIPTING to NARRATING to DONE.
-/start and /restart from ANY stage cancel in-progress work, delete temp media, reset to GREETING.
+/start and /restart from ANY stage cancel in-progress work, purge that chat's temp media, and re-ask for a photo (they advance to AWAITING_PHOTO).
+Besides reset-to-GREETING, the only non-ordered move allowed is the Bouncer retry edge **BOUNCER_CHECK -> AWAITING_PHOTO** (a rejected photo returns the chat to awaiting a photo); every other non-ordered move stays illegal (`IllegalTransitionError`, fail loud).
 
 ## Resilience (point-bearing, do not skip)
 1. /restart and /start full reset: cancel active session, purge all temp files for that chat (photo, PNG, audio), re-init orchestrator memory to GREETING. Must work mid-interview, mid-generation, any stage. No process reboot ever.

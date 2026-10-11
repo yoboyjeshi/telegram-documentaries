@@ -104,4 +104,10 @@ requirements.txt      # **+ google-adk (pinned to resolved major)**
 - Keep it simple and general; no config toggles or speculative abstractions.
 
 ## Implementation deviations
-_(to be recorded during validation)_
+- **`google-adk` resolved version: `2.11.0`** (pinned exactly in `requirements.txt`); installed and importable in the dev environment. `requirements.txt` was also put in alphabetical order.
+- **`LazyBouncer` added** (`app/bouncer.py`): `build_application` constructs the ADK agent lazily on first photo, via `Settings.require_gemini_key`. This keeps the bot's *startup* free of any Gemini key requirement while still failing friendly (not crashing) at first use if the key is absent. Task group 1.4's intent ("keep `gemini_api_key` optional at load time") is preserved.
+- **`file_id is None` guard lives in `app/photo_flow.py`** as defence-in-depth. In the real path the adapter already maps a photo with a missing `file_id` to `kind="other"` (WARNING, never raises), so this branch is only reachable when `ChatInput` is built directly (as unit tests do). It returns the friendly download-failure text and recovers the stage, matching the "never crash" contract.
+- **`handle_photo_wrong_stage` and the reset handlers keep a `store` parameter** even where unused, to keep the handler signature uniform and call sites simple.
+- **ADK app/session identifiers are module constants** (`BOUNCER_APP_NAME`, user/session id `"bouncer"`) — no per-chat session is needed for a stateless single-shot inspection.
+- **`AdkBouncer` sets `GOOGLE_API_KEY` from the supplied key via `os.environ.setdefault(...)`** immediately before the lazy ADK imports, so the ADK/Gemini client can authenticate without the key ever being logged.
+- No scope drift: no Interviewer/Converter/Scripter/Narrator code, no interview questions, no new stages.
