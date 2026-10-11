@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run linters and type checks.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+echo "== ruff =="
+ruff check app tests
+echo "== mypy =="
+mypy app
+echo "== hooks: OK =="
