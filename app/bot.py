@@ -123,12 +123,12 @@ async def dispatch_safely(
 
 async def _on_error(update: object, context: CallbackContext) -> None:
     """Global backstop: log unhandled errors instead of crashing the poller."""
-    # PTB invokes this handler from within its error path; logging at ERROR with
-    # a traceback is the conventional form (``exc_info=True``), even though the
-    # static check cannot see the surrounding exception context.
+    # PTB passes the exception on ``context.error``; log it explicitly with its
+    # traceback (``exc_info=<exception>``) rather than relying on ambient
+    # exception state, which is not active inside this error handler.
     logger.error(
         "Unhandled error while processing update",
-        exc_info=True,  # noqa: LOG014
+        exc_info=context.error,
     )
 
 

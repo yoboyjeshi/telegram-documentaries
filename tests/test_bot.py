@@ -194,3 +194,15 @@ def test_build_application_registers_photo_handler() -> None:
     application = build_application(settings)
     message_handlers = [h for h in application.handlers[0] if isinstance(h, MessageHandler)]
     assert len(message_handlers) >= 2
+
+
+def test_on_error_logs_the_underlying_exception(caplog) -> None:
+    error = RuntimeError("kaboom")
+    context = SimpleNamespace(error=error)
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(bot_module._on_error(None, context))
+
+    records = [record for record in caplog.records if record.exc_info]
+    assert records, "expected an ERROR record carrying the exception"
+    assert records[0].exc_info[1] is error
