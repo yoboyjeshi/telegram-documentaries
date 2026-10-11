@@ -26,6 +26,9 @@ def configure_logging(level: int = logging.INFO) -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # The HTTP client logs full request URLs at INFO. Telegram request URLs
+    # embed the bot token, so keep httpx quiet to avoid leaking secrets.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _chat_id_from(args: tuple[Any, ...]) -> int | None:

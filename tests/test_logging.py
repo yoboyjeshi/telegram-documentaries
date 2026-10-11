@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.config import Settings
-from app.logging_config import FRIENDLY_ERROR, guard_errors, logged
+from app.logging_config import FRIENDLY_ERROR, configure_logging, guard_errors, logged
 from app.telegram_adapter import ChatInput
 
 
@@ -45,3 +45,29 @@ def test_guard_errors_logs_and_returns_fallback(caplog) -> None:
     assert result == FRIENDLY_ERROR
     assert any(record.levelno == logging.ERROR for record in caplog.records)
     assert any(record.exc_info for record in caplog.records)
+
+
+def test_http_request_urls_are_not_logged(caplog) -> None:
+    """The HTTP client logs full request URLs at INFO; Telegram embeds the token."""
+    configure_logging(level=logging.INFO)
+    token = "123456789:SUPER_SECRET_BOT_TOKEN"
+
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("httpx").info(
+            "HTTP Request: POST https://api.telegram.org/bot%s/getMe", token
+        )
+
+    assert token not in caplog.text
+    assert "api.telegram.org" not in caplog.text
+
+
+def test_http_client_cannot_emit_info_records() -> None:
+    """httpx must be quiet at INFO so request URLs never reach the logs."""
+    configure_logging(level=logging.INFO)
+    root = logging.getLogger()
+    previous = root.level
+    try:
+        root.setLevel(logging.INFO)
+        assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+    finally:
+        root.setLevel(previous)
