@@ -2,7 +2,7 @@
 
 Build in order. Each feature is one SDD loop: spec, Build orchestrator, review, manual phone test, merge PR. Start a fresh OpenCode session per feature to conserve tokens.
 
-1. Telegram Gateway: connect via long polling using TELEGRAM_BOT_TOKEN from .env; implement /start and /restart (greet plus reset); echo text replies to confirm the pipe on the phone; establish per-chat session store and state-machine scaffold. Done when the bot replies on the phone and /restart resets to GREETING.
+1. Telegram Gateway: connect via long polling using TELEGRAM_BOT_TOKEN from .env; implement /start and /restart (greet plus reset); echo text replies to confirm the pipe on the phone; establish per-chat session store and state-machine scaffold. Done when the bot replies on the phone and /restart resets to GREETING. **Status: implemented** (2026-10-11, branch `feature/2026-10-11-telegram-gateway`; code and tests complete pending manual phone test and PR merge).
 2. The Bouncer: on photo upload, download to a chat-namespaced temp path; Bouncer agent confirms a human face; human advances to INTERVIEW, non-human gets a humorous refusal and stays in AWAITING_PHOTO. Done when a selfie advances and an object/pet photo is rejected without crashing.
 3. The Interviewer (+ orchestrator): 5 to 7 pointed questions one at a time; maintain state; collect answers into a trait summary; this agent orchestrates remaining stages. Done when the bot interviews and produces a trait summary.
 4. The Converter: pass original portrait plus interview summary to flash-image; generate hybrid-animal avatar; send image to chat. Done when a generated animal-hybrid image arrives after the interview.
