@@ -13,6 +13,11 @@ Upload a portrait photo in Telegram and the bot runs a five-stage pipeline:
 
 Everything happens inside Telegram. There is no web frontend.
 
+> **Current status:** Feature 1 (Telegram Gateway) is implemented — the bot
+> connects via long polling, `/start` and `/restart` greet and reset the chat,
+> and plain text is echoed. The five stages above are the roadmap; the
+> generative parts land in later features.
+
 ## Quickstart
 
 1. **Clone the repo**
@@ -44,6 +49,19 @@ Everything happens inside Telegram. There is no web frontend.
    python -m app.main
    ```
    The bot uses Telegram **long polling**, so it reaches outbound over HTTPS — no public IP, SSL certificate, or ngrok required.
+
+## Development
+
+Run these from the repo root:
+
+- **Tests** — `./scripts/test` runs the `pytest` suite (`python3 -m pytest`).
+  Extra arguments are forwarded, e.g. `./scripts/test -k states`.
+- **Lint & types** — `./scripts/hooks` runs `ruff check app tests` followed by
+  `mypy app`.
+
+Both scripts are the project's gates; a change is only ready when both are green.
+There is no network access and no real Telegram involved in the tests: Telegram
+sends are mocked and secrets stay out of the suite.
 
 ## Project constitution
 The project contract lives in `SPECS/`:

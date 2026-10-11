@@ -82,3 +82,50 @@ requirements.txt
 - Scope guard: **no** Gemini / ADK / Bouncer / media code in this feature.
 - Secrets: never logged, never in tests, never committed (`.env` stays ignored).
 - Keep it simple and general; do not add config toggles or speculative abstractions.
+
+---
+
+## Implementation deviations (recorded during validation, 2026-10-11)
+
+Deviations from this plan as implemented on `feature/2026-10-11-telegram-gateway`
+(commit `e6d04fe`). None are blocking; they were accepted by the code-review pass.
+
+1. **PTB-level handlers use `dispatch_safely()` instead of `@guard_errors`.**
+   `@guard_errors` returns `FRIENDLY_ERROR` when a handler raises, but a
+   PTB-level handler's return value is not sent by anything — so a failure
+   would leave the user in silence. The PTB-facing handlers (`_on_start`,
+   `_on_restart`, `_on_text` in `app/bot.py`) therefore call
+   `dispatch_safely()`, which catches anything escaping `dispatch()`, logs it,
+   and actively sends `FRIENDLY_ERROR` through the guarded `safe_send_message`.
+   `@guard_errors` still wraps the three pure handlers
+   (`handle_start`/`handle_restart`/`handle_text`), whose return value *is*
+   sent by `dispatch()`.
+2. **`@logged` now logs the session `stage`** (before and after) as well as the
+   handler name and `chat_id`, resolved through the session store — matching
+   `requirements.md` ("logs the handler name, `chat_id`, and stage
+   before/after"). Covered by `tests/test_logging.py`.
+3. **`httpx` logging is forced to `WARNING`** in `configure_logging()`. The HTTP
+   client logs full request URLs at INFO, and Telegram request URLs embed the
+   bot token; raising the level prevents a secret leak via logs. Covered by
+   `tests/test_logging.py`.
+4. **Non-text messages yield `ChatInput(kind="other")` + WARNING, not `None`.**
+   Task 6.1 described "an unsupported update to `None`". As implemented, an
+   update that has a message but no text (e.g. a photo/voice) returns a
+   `ChatInput` with `kind="other"`, logs a WARNING, and is ignored; only
+   truly foreign updates (no message) return `None`. This matches the
+   `ChatInput.kind` contract in `requirements.md` and the review-fix decision to
+   warn rather than silently drop.
+5. **`pytest-asyncio` is intentionally omitted from `requirements.txt`.** Task
+   1.2 listed it, but the tests drive coroutines with the stdlib `asyncio.run`
+   and use no async fixtures or markers, so the plugin is unnecessary.
+6. **`tests/test_logging.py`** was added (beyond the layout block) to cover the
+   secret-hygiene and stage-logging requirements; `tests/test_bot.py` (task 6.3)
+   is also present.
+
+## Task-group status
+- Task groups 1–7: implemented as planned; `scripts/test` and `scripts/hooks`
+  both green.
+- 8.1 `README.md` dev-script docs: **done during validation** (see
+  "## Development" in `README.md`).
+- 8.2 `SPECS/TECH.md` `python-telegram-bot` + Pydantic contracts: **done during
+  validation**.

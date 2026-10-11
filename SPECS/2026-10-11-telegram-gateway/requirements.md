@@ -51,6 +51,7 @@ Stand up the Telegram transport and the per-chat state scaffold so later feature
 - Standard-library `logging`, configured once at startup.
 - A decorator (`@logged`) wraps handlers and logs the handler name, `chat_id`, and stage before/after — **never** secret values or full message bodies.
 - A `@guard_errors` decorator wraps handlers: on exception it logs the traceback and returns a friendly message instead of propagating. A global `Application` error handler is registered as a backstop.
+- **Deviation (recorded during validation):** the PTB-level handlers do not call `@guard_errors` directly, because its returned fallback would never be sent. They call `dispatch_safely()`, which logs and actively sends the friendly message through the guarded send helper; `@guard_errors` still wraps the pure handlers whose return value `dispatch()` sends. See `plan.md` -> "Implementation deviations". `@logged` also logs the session `stage` (before/after) in addition to handler name and `chat_id`.
 
 ## Testing
 - **Red/Green TDD.** Tests are written first and fail until implemented.
@@ -59,8 +60,9 @@ Stand up the Telegram transport and the per-chat state scaffold so later feature
 - Run `scripts/test` (pytest) and `scripts/hooks` (ruff + mypy) as the gates.
 
 ## Docs to reconcile during validation
-- `README.md`: add `scripts/test` / `scripts/hooks` usage and confirm run instructions.
-- `SPECS/TECH.md`: name `python-telegram-bot` and the Pydantic contract approach (refinement of the current wording).
+- [done 2026-10-11] `README.md`: added `scripts/test` / `scripts/hooks` usage under "## Development"; run instructions unchanged (still `python -m app.main`).
+- [done 2026-10-11] `SPECS/TECH.md`: now names `python-telegram-bot` (v21+) and the Pydantic v2 contract approach (`Settings`/`ChatInput`/`SessionState`).
+- [done 2026-10-11] `pytest-asyncio` intentionally omitted from `requirements.txt` (tests use `asyncio.run`); recorded in `plan.md` and `validation.md`.
 
 ## Open questions
 - None blocking — library, contracts, layout, and tooling resolved with the user above.

@@ -4,7 +4,8 @@
 Python 3, running locally in Codio during development.
 
 ## Stack (use these, do not substitute)
-- Telegram API via a Python Telegram library using LONG POLLING, not webhooks. Rationale: long polling reaches outbound to Telegram over HTTPS, works behind NAT/firewall on localhost, needs no public IP, SSL cert, or ngrok. Do not implement a webhook server.
+- Telegram API via **`python-telegram-bot`** (v21+) using LONG POLLING, not webhooks. Rationale: long polling reaches outbound to Telegram over HTTPS, works behind NAT/firewall on localhost, needs no public IP, SSL cert, or ngrok. Do not implement a webhook server.
+- Transports and contracts: Pydantic v2 models at the boundaries. `Settings` (loaded from `.env`, secrets held as `SecretStr`), `ChatInput` (a normalised, typed view of every inbound update, with `chat_id` normalised to `int`), and `SessionState` (per-chat stage). Untrusted input is parsed/validated at the edge, never trusted raw.
 - Google ADK (Agent Development Kit) to structure the pipeline as discrete specialized agents in a clear state machine, not ad-hoc chained API calls.
 - Gemini 3.1 models:
   - Bouncer, Interviewer, Scripter: gemini-3.1-flash-lite
@@ -12,7 +13,7 @@ Python 3, running locally in Codio during development.
   - Narrator: gemini-3.1-flash-tts-preview
 
 ## Secrets
-Read TELEGRAM_BOT_TOKEN and GEMINI_API_KEY from .env (python-dotenv or equivalent). Never hard-code, never log secret values. .env is git-ignored; .env.example documents the keys.
+Read TELEGRAM_BOT_TOKEN and GEMINI_API_KEY from .env via python-dotenv (`load_dotenv()`, then a Pydantic `Settings` model validates). Never hard-code, never log secret values. .env is git-ignored; .env.example documents the keys.
 
 ## Agents as a state machine
 The Interviewer agent doubles as the orchestrator.
@@ -33,7 +34,7 @@ GREETING to AWAITING_PHOTO to BOUNCER_CHECK to INTERVIEW (5 to 7 Q) to CONVERTIN
 4. Temp-media hygiene: namespace each chat's media by chat_id; delete on completion AND on reset.
 
 ## Testing
-Red/Green TDD via write-tests for pure logic (state transitions, prompt builders, reset logic). Mock external calls in unit tests; keep secrets out of tests. LLM calls exercised by manual phone testing.
+Gates: `scripts/test` (pytest) and `scripts/hooks` (ruff + mypy). Red/Green TDD via write-tests for pure logic (state transitions, prompt builders, reset logic). Mock external calls in unit tests; keep secrets out of tests. LLM calls exercised by manual phone testing.
 
 ## Out of scope
 No web frontend, no webhook server, no database (in-memory per-chat state plus temp files is sufficient), no user accounts.
