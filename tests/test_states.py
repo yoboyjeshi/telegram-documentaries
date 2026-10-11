@@ -15,6 +15,11 @@ from app.states import (
 )
 
 
+def test_stage_enum_has_exactly_eight_members() -> None:
+    assert len(list(Stage)) == 8
+    assert set(Stage) == set(PIPELINE_ORDER)
+
+
 def test_stage_members_in_pipeline_order() -> None:
     assert [stage.value for stage in PIPELINE_ORDER] == [
         "GREETING",

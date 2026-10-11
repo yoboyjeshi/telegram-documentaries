@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 from app.telegram_adapter import extract_chat_input
@@ -36,6 +37,21 @@ def test_plain_text_is_parsed() -> None:
 def test_unsupported_update_returns_none() -> None:
     update = SimpleNamespace(effective_message=None, message=None)
     assert extract_chat_input(update) is None
+
+
+def test_message_without_text_is_other_kind() -> None:
+    parsed = extract_chat_input(_update(None))
+    assert parsed is not None
+    assert parsed.kind == "other"
+    assert parsed.text is None
+
+
+def test_message_without_text_logs_warning(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        extract_chat_input(_update(None))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
 
 
 def test_chat_id_is_normalised_to_int() -> None:

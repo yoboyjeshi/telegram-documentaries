@@ -6,9 +6,12 @@ normalises ``chat_id`` to an ``int`` so it is safe to use as a session key.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel
+
+logger = logging.getLogger("telegram_documentaries")
 
 
 class ChatInput(BaseModel):
@@ -36,6 +39,8 @@ def extract_chat_input(update: object) -> ChatInput | None:
 
     text = getattr(message, "text", None)
     if not isinstance(text, str):
+        # e.g. a photo/voice message. Not handled yet, so warn rather than ignore.
+        logger.warning("Ignoring unsupported message (no text) chat_id=%s", chat_id)
         return ChatInput(chat_id=chat_id, kind="other")
 
     if text.startswith("/"):

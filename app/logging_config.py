@@ -42,24 +42,68 @@ def _chat_id_from(args: tuple[Any, ...]) -> int | None:
     return None
 
 
+def _session_store_from(args: tuple[Any, ...]) -> Any | None:
+    """Find the session store in handler args: the arg exposing a ``.get``."""
+    for arg in args:
+        getter = getattr(arg, "get", None)
+        if callable(getter):
+            return arg
+    return None
+
+
+def _stage_from(args: tuple[Any, ...], chat_id: int | None) -> str | None:
+    """Best-effort current stage for logging. Never raises.
+
+    The stage is resolved through the session store so the ``start`` and
+    ``done`` lines can show a before/after transition. When the store or the
+    stage cannot be resolved we log ``None`` rather than failing.
+    """
+    if chat_id is None:
+        return None
+    store = _session_store_from(args)
+    if store is None:
+        return None
+    try:
+        state = store.get(chat_id)
+    except Exception:
+        logger.debug("Could not read session stage for logging", exc_info=True)
+        return None
+    stage = getattr(state, "stage", None)
+    if stage is None:
+        return None
+    return str(getattr(stage, "value", stage))
+
+
+def _log_line(func_name: str, args: tuple[Any, ...], phase: str) -> None:
+    """Emit one entry/exit log line with handler, chat id, and stage."""
+    chat_id = _chat_id_from(args)
+    logger.info(
+        "handler=%s chat_id=%s stage=%s %s",
+        func_name,
+        chat_id,
+        _stage_from(args, chat_id),
+        phase,
+    )
+
+
 def logged(func: F) -> F:
     """Log entry/exit of a handler without leaking bodies or secrets."""
     if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            logger.info("handler=%s chat_id=%s start", func.__name__, _chat_id_from(args))
+            _log_line(func.__name__, args, "start")
             result = await func(*args, **kwargs)
-            logger.info("handler=%s chat_id=%s done", func.__name__, _chat_id_from(args))
+            _log_line(func.__name__, args, "done")
             return result
 
         return cast(F, async_wrapper)
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        logger.info("handler=%s chat_id=%s start", func.__name__, _chat_id_from(args))
+        _log_line(func.__name__, args, "start")
         result = func(*args, **kwargs)
-        logger.info("handler=%s chat_id=%s done", func.__name__, _chat_id_from(args))
+        _log_line(func.__name__, args, "done")
         return result
 
     return cast(F, wrapper)

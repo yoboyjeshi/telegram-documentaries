@@ -6,6 +6,8 @@ import logging
 
 from app.config import Settings
 from app.logging_config import FRIENDLY_ERROR, configure_logging, guard_errors, logged
+from app.session_store import InMemorySessionStore
+from app.states import Stage
 from app.telegram_adapter import ChatInput
 
 
@@ -21,7 +23,7 @@ def test_secret_value_never_logged(caplog) -> None:
 
 def test_logged_reports_chat_id_but_not_body(caplog) -> None:
     @logged
-    def my_handler(store, incoming):  # type: ignore[no-untyped-def]
+    def my_handler(store: object, incoming: ChatInput) -> str | None:
         return incoming.text
 
     incoming = ChatInput(chat_id=42, kind="text", text="TOPSECRETBODY")
@@ -32,6 +34,72 @@ def test_logged_reports_chat_id_but_not_body(caplog) -> None:
     assert "handler=my_handler" in caplog.text
     assert "42" in caplog.text
     assert "TOPSECRETBODY" not in caplog.text
+
+
+def test_logged_includes_current_stage_from_session_store(caplog) -> None:
+    store = InMemorySessionStore()
+    store.get(7).stage = Stage.INTERVIEW
+
+    @logged
+    def my_handler(store: InMemorySessionStore, incoming: ChatInput) -> str:
+        return "ok"
+
+    with caplog.at_level(logging.INFO):
+        my_handler(store, ChatInput(chat_id=7, kind="text", text="hi"))
+
+    assert "handler=my_handler" in caplog.text
+    assert "chat_id=7" in caplog.text
+    assert "stage=INTERVIEW" in caplog.text
+
+
+def test_logged_logs_greeting_stage_for_new_chat(caplog) -> None:
+    store = InMemorySessionStore()
+
+    @logged
+    def my_handler(store: InMemorySessionStore, incoming: ChatInput) -> str:
+        return "ok"
+
+    with caplog.at_level(logging.INFO):
+        my_handler(store, ChatInput(chat_id=9, kind="text", text="hi"))
+
+    assert "stage=GREETING" in caplog.text
+
+
+def test_logged_reports_stage_before_and_after(caplog) -> None:
+    store = InMemorySessionStore()
+    store.get(3).stage = Stage.INTERVIEW
+
+    @logged
+    def reset_handler(store: InMemorySessionStore, incoming: ChatInput) -> str:
+        store.reset(incoming.chat_id)
+        return "done"
+
+    with caplog.at_level(logging.INFO):
+        reset_handler(
+            store,
+            ChatInput(chat_id=3, kind="command", text="/start", command="start"),
+        )
+
+    assert "stage=INTERVIEW" in caplog.text
+    assert "stage=GREETING" in caplog.text
+
+
+def test_logged_never_raises_when_stage_cannot_be_resolved(caplog) -> None:
+    """A missing/exploding store must not turn logging into a failure."""
+
+    class ExplodingStore:
+        def get(self, chat_id: int) -> object:
+            raise RuntimeError("boom")
+
+    @logged
+    def my_handler(store: object, incoming: ChatInput) -> str | None:
+        return incoming.text
+
+    with caplog.at_level(logging.INFO):
+        result = my_handler(ExplodingStore(), ChatInput(chat_id=1, kind="text", text="hi"))
+
+    assert result == "hi"
+    assert "stage=None" in caplog.text
 
 
 def test_guard_errors_logs_and_returns_fallback(caplog) -> None:
