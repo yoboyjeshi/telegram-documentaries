@@ -3,7 +3,7 @@
 How we know Feature 3 is correct and can be merged.
 
 Verification date: **TBD**. Branch: `feature/2026-10-17-interviewer`.
-Status: **spec drafted — awaiting user review before implementation.**
+Status: **spec approved (2026-10-17) — implementation in progress.**
 
 ## 1. Automated gates
 - [ ] `scripts/test` passes (all unit tests green, **no network**). — observed count: _TBD_.
@@ -17,10 +17,11 @@ Status: **spec drafted — awaiting user review before implementation.**
   - [ ] Progression 1..N advancing one step per answer; answers collected as Q/A pairs. (`tests/test_orchestrator.py`)
   - [ ] Summary assembly stores the `TraitSummary` and advances `INTERVIEW -> CONVERTING` with `INTERVIEW_COMPLETE_TEXT`. (`tests/test_orchestrator.py`)
   - [ ] Blank/whitespace answer re-asks, does not record/advance. (`tests/test_orchestrator.py`)
+  - [ ] Unknown command mid-interview → `INTERVIEW_UNKNOWN_COMMAND_TEXT` nudge, records nothing, stays on the current question. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [ ] Photo mid-interview → gentle redirect, stage + pending question unchanged. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [ ] Interviewer failure (`next_question` / `summarise` raises) → friendly retry, state unchanged, no raise. (`tests/test_orchestrator.py`)
   - [ ] Human verdict starts the interview (intro + Q1). (`tests/test_photo_flow.py`)
-  - [ ] Bot routing: INTERVIEW text → orchestrator; INTERVIEW photo → redirect; unknown command ignored. (`tests/test_bot.py`)
+  - [ ] Bot routing: INTERVIEW text → orchestrator; INTERVIEW photo → redirect; INTERVIEW unknown command → nudge. (`tests/test_bot.py`)
   - [ ] Logging hygiene: no `GEMINI_API_KEY`, no raw answers, no summary text, no image bytes. (`tests/test_interviewer.py`, `tests/test_orchestrator.py`)
 
 ## 2. Manual phone test (long polling)
@@ -30,6 +31,7 @@ With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, th
 - [ ] After the final answer → a friendly completion message; the chat is now at `CONVERTING` (nothing further happens yet).
 - [ ] Send a **photo mid-interview** → gentle redirect; the current question is unchanged; no crash.
 - [ ] Send an **empty/whitespace** message mid-interview → the same question is re-asked.
+- [ ] Send an **unknown command** (e.g. `/foo`) mid-interview → a short nudge to answer the question or use `/restart`; the current question is unchanged.
 - [ ] `/restart` mid-interview → session resets to awaiting-a-photo and the interview state + temp media are cleared.
 - [ ] Temporarily unset `GEMINI_API_KEY` mid-interview → friendly retry, **no crash**, state preserved; restore and retry succeeds.
 - [ ] Inspect logs: handler/`chat_id`/stage and interview **counts** appear; **no answer text, no summary text, no key, no image bytes**.

@@ -57,7 +57,7 @@ scripts/
 3.3 Run `scripts/test` + `scripts/hooks`.
 
 ## Task group 4 — Pure handler texts + verdict change (Red/Green)
-4.1 **Red:** `tests/test_handlers.py` — the new texts exist and read well (`INTERVIEW_INTRO`, `INTERVIEW_PHOTO_REDIRECT_TEXT`, `INTERVIEW_REPROMPT_TEXT`, `INTERVIEW_COMPLETE_TEXT`, `INTERVIEW_FAILURE_TEXT`); `apply_bouncer_verdict(human)` sets `INTERVIEW` and returns `None`; `apply_bouncer_verdict(non-human)` stays a refusal from the pool; drop `test_interview_ready_text_asks_no_question`.
+4.1 **Red:** `tests/test_handlers.py` — the new texts exist and read well (`INTERVIEW_INTRO`, `INTERVIEW_PHOTO_REDIRECT_TEXT`, `INTERVIEW_REPROMPT_TEXT`, `INTERVIEW_COMPLETE_TEXT`, `INTERVIEW_FAILURE_TEXT`, `INTERVIEW_UNKNOWN_COMMAND_TEXT`); `apply_bouncer_verdict(human)` sets `INTERVIEW` and returns `None`; `apply_bouncer_verdict(non-human)` stays a refusal from the pool; drop `test_interview_ready_text_asks_no_question`.
 4.2 **Green:** `app/handlers.py` — add the texts, remove `INTERVIEW_READY_TEXT`, change the human branch to set `INTERVIEW` and return `None`.
 4.3 Run `scripts/test` + `scripts/hooks`.
 
@@ -69,9 +69,10 @@ scripts/
    - a blank/whitespace answer re-asks (`INTERVIEW_REPROMPT_TEXT`) and does **not** record or advance;
    - a photo mid-interview returns `INTERVIEW_PHOTO_REDIRECT_TEXT`, no state change (stage + pending question unchanged);
    - self-heal: text at `INTERVIEW` with no interview state asks Q1;
+   - an **unknown command** at `INTERVIEW` returns `INTERVIEW_UNKNOWN_COMMAND_TEXT`, records nothing, and leaves the current question unchanged;
    - `next_question` raises → `INTERVIEW_FAILURE_TEXT`, state unchanged (same pending question), no raise;
    - `summarise` raises → `INTERVIEW_FAILURE_TEXT`, not advanced, answered history unchanged, no raise.
-5.2 **Green:** `app/orchestrator.py` — `async def start_interview(store, chat_id, *, interviewer) -> str` and `async def handle_interview_update(store, incoming, *, interviewer) -> str`, with the commit-only-on-success rule and wrapped Gemini calls (log type + message only).
+5.2 **Green:** `app/orchestrator.py` — `async def start_interview(store, chat_id, *, interviewer) -> str` and `async def handle_interview_update(store, incoming, *, interviewer) -> str` (handles `text`, `photo`, and unknown `command` kinds), with the commit-only-on-success rule and wrapped Gemini calls (log type + message only).
 5.3 Run `scripts/test` + `scripts/hooks`.
 
 ## Task group 6 — Photo flow starts the interview (Red/Green)
@@ -80,8 +81,8 @@ scripts/
 6.3 Run `scripts/test` + `scripts/hooks`.
 
 ## Task group 7 — Bot wiring: route INTERVIEW updates (Red/Green)
-7.1 **Red:** `tests/test_bot.py` — a `LazyInterviewer` is built and injected; a **text** while `INTERVIEW` is routed to the orchestrator (answer recorded / progressed); a **photo** while `INTERVIEW` gets the redirect (**no** download); an **unknown command** while `INTERVIEW` is ignored (no reply, WARNING); existing AWAITING_PHOTO/command routing stays green; deps remain injectable.
-7.2 **Green:** `app/bot.py` — build `LazyInterviewer(settings.require_gemini_key)`; in `dispatch`, before the generic text/photo branches, route `INTERVIEW`-stage `text`/`photo` to `orchestrator.handle_interview_update`; thread `interviewer` through `dispatch`/`dispatch_safely`/`build_application` and into `handle_photo_update`.
+7.1 **Red:** `tests/test_bot.py` — a `LazyInterviewer` is built and injected; a **text** while `INTERVIEW` is routed to the orchestrator (answer recorded / progressed); a **photo** while `INTERVIEW` gets the redirect (**no** download); an **unknown command** while `INTERVIEW` gets `INTERVIEW_UNKNOWN_COMMAND_TEXT` and does **not** advance; existing AWAITING_PHOTO/command routing stays green; deps remain injectable.
+7.2 **Green:** `app/bot.py` — build `LazyInterviewer(settings.require_gemini_key)`; in `dispatch`, before the generic text/photo branches, route `INTERVIEW`-stage `text`/`photo`/`command` updates to `orchestrator.handle_interview_update`; thread `interviewer` through `dispatch`/`dispatch_safely`/`build_application` and into `handle_photo_update`.
 7.3 Run `scripts/test` + `scripts/hooks`.
 
 ## Task group 8 — Docs & spec reconciliation

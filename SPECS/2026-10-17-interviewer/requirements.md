@@ -22,6 +22,7 @@ When the Bouncer advances a chat to `INTERVIEW`, an **Interviewer ADK agent** (`
 6. **Edge cases (constitution):**
    - A **photo sent mid-interview** → gentle redirect; stage and current question unchanged; no download, no crash.
    - A **blank/whitespace answer** → re-ask the current question; not recorded; no advance.
+   - An **unknown slash-command mid-interview** (e.g. `/foo`, neither `/start` nor `/restart`) → a short nudge (`INTERVIEW_UNKNOWN_COMMAND_TEXT`) inviting the user to answer the question or use `/restart`; **not** recorded as an answer; the current question is unchanged.
    - `/start` and `/restart` mid-interview → full reset and temp-media purge (existing behaviour), now **also clearing the interview state**.
 7. **Resilience:** every Gemini call and every Telegram send is wrapped. A Gemini failure mid-interview → friendly "try again" message, interview state unchanged, process alive (reuse `@guard_errors`, `safe_send_message`, `dispatch_safely`).
 8. **Orchestrator seam:** a minimal `app/orchestrator.py` owns the `INTERVIEW`-stage routing (for now only that stage) and delegates to the interviewer; `bot.dispatch` just calls it. Later features (Converter, Scripter, Narrator) extend this module.
@@ -43,9 +44,7 @@ When the Bouncer advances a chat to `INTERVIEW`, an **Interviewer ADK agent** (`
   - `INTERVIEW_READY_TEXT` is replaced by `INTERVIEW_INTRO` (the entry reply now *does* ask a question). The Feature 2 test `test_interview_ready_text_asks_no_question` is removed.
   - `apply_bouncer_verdict(...)` returns the refusal text for a non-human verdict and **`None`** for a human one (the caller then starts the interview). Feature 2 tests for it are updated.
 - **Small shared helper:** extract the Google-API-key env helper from `app/bouncer.py` (`_ensure_google_api_key`) to a public `ensure_google_api_key` in `app/config.py`, used by both agents (warn only when a *different* value is already set, never logging any key).
-
-## Proposed decision (please confirm at spec review)
-- **Unknown slash-commands during the interview** (e.g. `/foo`, neither `/start` nor `/restart`) are **ignored** — no reply, `WARNING` — matching today's unknown-kind handling, rather than being recorded as an answer.
+- **Unknown slash-command mid-interview:** **do not** silently ignore it. Reply with a short nudge — `INTERVIEW_UNKNOWN_COMMAND_TEXT` ("That isn't a command I recognise — just answer the question, or use /restart to start over.") — and stay on the current question. It is **not** recorded as an answer.
 
 ## Typed contracts (parse at the edge, prefer schemas over regex)
 - **`InterviewQuestion` (Pydantic v2):** `text: str` — the agent's single question (validated schema).
@@ -83,4 +82,4 @@ When the Bouncer advances a chat to `INTERVIEW`, an **Interviewer ADK agent** (`
 - `README.md` (interviewer usage/status), `SPECS/TECH.md` (Interviewer now in use; orchestrator module; interview contracts), `SPECS/ROADMAP.md` (Feature 3 status), and this spec folder. Optionally `SPECS/MISSION.md` principle #1 wording ("return to greeting") **on user approval only**.
 
 ## Open questions
-- Only the **proposed decision** above (unknown-command handling during the interview) needs a yes/no at spec review.
+- None. The unknown-command behaviour was resolved with the user (nudge + stay on the current question).
