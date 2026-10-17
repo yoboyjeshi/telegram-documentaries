@@ -55,6 +55,11 @@ INTERVIEW_UNKNOWN_COMMAND_TEXT = (
     "or use /restart to start over."
 )
 
+INTERVIEW_OTHER_REDIRECT_TEXT = (
+    "How intriguing, but this interview is word-based -- "
+    "please answer the question in a message."
+)
+
 PHOTO_DOWNLOAD_FAILURE_TEXT = "I couldn't fetch that photo just now. Please send it again."
 
 BOUNCER_FAILURE_TEXT = (

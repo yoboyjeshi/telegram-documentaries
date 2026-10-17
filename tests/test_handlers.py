@@ -12,6 +12,7 @@ from app.handlers import (
     INTERVIEW_COMPLETE_TEXT,
     INTERVIEW_FAILURE_TEXT,
     INTERVIEW_INTRO,
+    INTERVIEW_OTHER_REDIRECT_TEXT,
     INTERVIEW_PHOTO_REDIRECT_TEXT,
     INTERVIEW_REPROMPT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
@@ -146,6 +147,7 @@ def test_interview_texts_are_non_empty_strings() -> None:
         INTERVIEW_COMPLETE_TEXT,
         INTERVIEW_FAILURE_TEXT,
         INTERVIEW_UNKNOWN_COMMAND_TEXT,
+        INTERVIEW_OTHER_REDIRECT_TEXT,
     )
     assert all(isinstance(text, str) and text.strip() for text in texts)
 
@@ -158,6 +160,11 @@ def test_interview_photo_redirect_asks_for_a_written_answer() -> None:
 def test_interview_reask_asks_for_a_written_answer() -> None:
     lowered = INTERVIEW_REPROMPT_TEXT.lower()
     assert "answer" in lowered or "question" in lowered
+
+
+def test_interview_other_kind_redirect_asks_for_a_written_answer() -> None:
+    lowered = INTERVIEW_OTHER_REDIRECT_TEXT.lower()
+    assert "answer" in lowered or "message" in lowered or "words" in lowered
 
 
 def test_interview_unknown_command_nudges_to_answer_or_restart() -> None:

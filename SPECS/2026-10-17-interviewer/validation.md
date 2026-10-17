@@ -6,7 +6,7 @@ Verification date: **2026-10-17 (automated gates)**. Branch: `feature/2026-10-17
 Status: **spec approved (2026-10-17) — implemented; automated gates green; manual phone test pending.**
 
 ## 1. Automated gates
-- [x] `scripts/test` passes (all unit tests green, **no network**). — observed count: **141**.
+- [x] `scripts/test` passes (all unit tests green, **no network**). — observed count: **151**.
 - [x] `scripts/hooks` passes (`ruff` clean, `mypy` clean).
 - [x] Tests were written first (Red) and cover, at minimum:
   - [x] Shared key helper: sets when absent; keeps+warns on a *different* pre-existing value; no warning when identical; never logs a key. (`tests/test_config.py`)
@@ -18,11 +18,14 @@ Status: **spec approved (2026-10-17) — implemented; automated gates green; man
   - [x] Summary assembly stores the `TraitSummary` and advances `INTERVIEW -> CONVERTING` with `INTERVIEW_COMPLETE_TEXT`. (`tests/test_orchestrator.py`)
   - [x] Blank/whitespace answer re-asks, does not record/advance. (`tests/test_orchestrator.py`)
   - [x] Unknown command mid-interview → `INTERVIEW_UNKNOWN_COMMAND_TEXT` nudge, records nothing, stays on the current question. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
+  - [x] Unknown commands reach the handler through PTB's **real handler registry** (catch-all registered last, `/start`/`/restart` still matched first). (`tests/test_bot.py`)
+  - [x] Other update kinds (sticker/document) mid-interview → `INTERVIEW_OTHER_REDIRECT_TEXT`, no state change, reachable via `bot.dispatch`. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [x] Photo mid-interview → gentle redirect, stage + pending question unchanged. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [x] Interviewer failure (`next_question` / `summarise` raises) → friendly retry, state unchanged, no raise. (`tests/test_orchestrator.py`)
   - [x] Human verdict starts the interview (intro + Q1). (`tests/test_photo_flow.py`)
   - [x] Bot routing: INTERVIEW text → orchestrator; INTERVIEW photo → redirect; INTERVIEW unknown command → nudge. (`tests/test_bot.py`)
-  - [x] Logging hygiene: no `GEMINI_API_KEY`, no raw answers, no summary text, no image bytes. (`tests/test_interviewer.py`, `tests/test_orchestrator.py`)
+  - [x] Logging hygiene: no `GEMINI_API_KEY` (verified on the real `_run_adk` path), no raw answers (including `ValidationError` payloads), no summary text, no image bytes. (`tests/test_interviewer.py`, `tests/test_orchestrator.py`)
+  - [x] Commit-only-on-success: after a failed `next_question`, a retry records exactly one answer against the single unchanged pending question. (`tests/test_orchestrator.py`)
 
 ## 2. Manual phone test (long polling)
 With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, then from a phone:

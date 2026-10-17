@@ -77,7 +77,12 @@ async def dispatch(
         reply = handle_start(store, incoming, media_root=media_root)
     elif incoming.kind == "command" and incoming.command == "restart":
         reply = handle_restart(store, incoming, media_root=media_root)
-    elif stage is Stage.INTERVIEW and incoming.kind in ("text", "photo", "command"):
+    elif stage is Stage.INTERVIEW and incoming.kind in (
+        "text",
+        "photo",
+        "command",
+        "other",
+    ):
         # Photos at INTERVIEW must never reach the download path.
         if interviewer is None:
             logger.warning("Update at INTERVIEW but no Interviewer is configured")
@@ -182,5 +187,8 @@ def build_application(
     application.add_handler(CommandHandler("restart", _handle))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle))
     application.add_handler(MessageHandler(filters.PHOTO, _handle))
+    # Catch-all for unknown commands so they reach dispatch (e.g. /foo mid-interview).
+    # Registered last so it never shadows /start or /restart.
+    application.add_handler(MessageHandler(filters.COMMAND, _handle))
     application.add_error_handler(_on_error)
     return application

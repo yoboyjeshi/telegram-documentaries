@@ -114,6 +114,18 @@ _(Filled in during implementation/validation.)_
   asking Q1 again. Covered by a test.
 - **`record(answer)` records the answer verbatim.** Blank/whitespace text is
   rejected before `record` is called; non-blank answers are stored as received.
-- **`handle_interview_update` treats any non-text/non-photo kind as an unknown
-  command** (nudge), since `/start` and `/restart` are handled earlier in
-  `bot.dispatch` and the adapter only produces `command`/`text`/`photo`/`other`.
+- **`handle_interview_update` branches by kind.** Commands get
+  `INTERVIEW_UNKNOWN_COMMAND_TEXT`; any other non-text/non-photo kind (sticker,
+  document, unsupported media) gets the new `INTERVIEW_OTHER_REDIRECT_TEXT`.
+  `bot.dispatch` now routes `other`-kind updates at `INTERVIEW` to the
+  orchestrator so that redirect is reachable; `/start` and `/restart` remain
+  handled earlier in `bot.dispatch`. (Code-review fix.)
+- **Bot registry catch-all (code-review fix).** `build_application` registers
+  `MessageHandler(filters.COMMAND, _handle)` **last**, so unknown commands
+  (`/foo`) reach `dispatch` → orchestrator. Previously PTB dropped them, making
+  the mid-interview nudge unreachable from real Telegram. `/start` and
+  `/restart` keep their dedicated `CommandHandler`s and are still matched first.
+- **Validation-failure logging (code-review fix).** `_log_interviewer_failure`
+  logs a `pydantic.ValidationError` as its type alone, because its message
+  embeds `input_value` (the raw model output, which can carry answer/summary
+  text). Other failures log a length-capped message (`_FAILURE_MESSAGE_MAX`).

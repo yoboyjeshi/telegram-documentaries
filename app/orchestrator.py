@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import logging
 
+from pydantic import ValidationError
+
 from app.handlers import (
     INTERVIEW_COMPLETE_TEXT,
     INTERVIEW_FAILURE_TEXT,
     INTERVIEW_INTRO,
+    INTERVIEW_OTHER_REDIRECT_TEXT,
     INTERVIEW_PHOTO_REDIRECT_TEXT,
     INTERVIEW_REPROMPT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
@@ -31,15 +34,27 @@ from app.telegram_adapter import ChatInput
 
 logger = logging.getLogger("telegram_documentaries")
 
+# A capped, single-line message keeps secret/answer-bearing payloads out of logs;
+# only used for non-validation failures (a ValidationError is logged by type).
+_FAILURE_MESSAGE_MAX = 200
+
 
 def _log_interviewer_failure(chat_id: int, exc: Exception) -> None:
-    """Log an interviewer failure as type + message only.
+    """Log an interviewer failure as type (+ short message) only.
 
     A full traceback can embed the request payload (history/answers), so we
     deliberately log no ``exc_info`` and never the raw answer or summary text.
+    A ``ValidationError`` is logged as its type alone: its message embeds
+    ``input_value`` -- the raw model output, which can carry answer/summary text.
     """
+    if isinstance(exc, ValidationError):
+        logger.error("Interviewer failed chat_id=%s: %s", chat_id, type(exc).__name__)
+        return
     logger.error(
-        "Interviewer failed chat_id=%s: %s: %s", chat_id, type(exc).__name__, exc
+        "Interviewer failed chat_id=%s: %s: %s",
+        chat_id,
+        type(exc).__name__,
+        str(exc)[:_FAILURE_MESSAGE_MAX],
     )
 
 
@@ -70,18 +85,20 @@ async def handle_interview_update(
     """Route one update during ``INTERVIEW``: answer, redirect, or nudge.
 
     A photo gets a gentle redirect with no state change; an unknown command gets
-    a nudge and stays on the current question; blank text re-asks the current
-    question. A valid answer only commits once the model call has succeeded.
+    a nudge and stays on the current question; any other kind (sticker,
+    document, unsupported media) gets a short redirect; blank text re-asks the
+    current question. A valid answer only commits once the model call succeeds.
     """
     chat_id = incoming.chat_id
     state = store.get(chat_id)
 
     if incoming.kind == "photo":
         return INTERVIEW_PHOTO_REDIRECT_TEXT
-    if incoming.kind != "text":
-        # Any non-text, non-photo update (including an unknown command) is nudged;
+    if incoming.kind == "command":
         # /start and /restart are handled before this point in the dispatcher.
         return INTERVIEW_UNKNOWN_COMMAND_TEXT
+    if incoming.kind != "text":
+        return INTERVIEW_OTHER_REDIRECT_TEXT
 
     interview = state.interview
     if interview is None or interview.pending_question is None:

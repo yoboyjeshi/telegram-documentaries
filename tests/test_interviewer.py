@@ -42,19 +42,27 @@ def test_adk_interviewer_requires_a_key() -> None:
         AdkInterviewer("")
 
 
-def test_adk_interviewer_never_logs_the_key(caplog) -> None:
+def test_adk_interviewer_never_logs_the_key(caplog, monkeypatch) -> None:
+    """The real ADK path must never emit the key, even when it fails.
+
+    The key-exposure step is monkeypatched to raise, so the genuine ``_run_adk``
+    path runs and fails offline (no network); any code on that path that logged
+    the key would land in ``caplog``.
+    """
     secret = "SUPER_SECRET_GEMINI_KEY"
+    seen: list[str] = []
 
-    async def failing_runner(history: Sequence[InterviewAnswer]) -> InterviewQuestion:
-        logging.getLogger("telegram_documentaries").error("Interviewer runner failed")
-        raise RuntimeError("gemini down")
+    def explode(key: str) -> None:
+        seen.append(key)  # proves the real path carried the actual key
+        raise RuntimeError("GEMINI_API_KEY rejected")
 
-    interviewer = AdkInterviewer(secret, question_runner=failing_runner)
+    monkeypatch.setattr("app.interviewer.ensure_google_api_key", explode)
+    interviewer = AdkInterviewer(secret)
 
-    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError):
+    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError, match="rejected"):
         asyncio.run(interviewer.next_question(_history()))
 
-    assert "Interviewer runner failed" in caplog.text  # a real logging path ran
+    assert seen == [secret]
     assert secret not in caplog.text
 
 
