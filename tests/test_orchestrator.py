@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from app import orchestrator
 from app.handlers import (
+    CONVERTER_CAPTION,
+    CONVERTER_FAILURE_TEXT,
+    CONVERTER_MISSING_PORTRAIT_TEXT,
     INTERVIEW_COMPLETE_TEXT,
     INTERVIEW_FAILURE_TEXT,
     INTERVIEW_INTRO,
@@ -20,6 +24,7 @@ from app.handlers import (
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
 )
 from app.interviewer import TOTAL_QUESTIONS, InterviewQuestion
+from app.media import avatar_dest, photo_dest
 from app.session_store import InMemorySessionStore
 from app.states import InterviewAnswer, InterviewState, Stage, TraitSummary
 from app.telegram_adapter import ChatInput
@@ -411,3 +416,269 @@ def test_summary_text_is_never_logged(caplog) -> None:
 
     assert SUMMARY_SENTINEL not in caplog.text
     assert "final" not in caplog.text
+
+
+# --- CONVERTING-stage step (the Converter handoff) ---------------------------
+
+IMAGE_SENTINEL = b"IMAGE_BYTES_sentinel_png"
+
+
+class FakeConverter:
+    """Deterministic converter double: no network, records what it was asked."""
+
+    def __init__(
+        self,
+        data: bytes = IMAGE_SENTINEL,
+        exc: Exception | None = None,
+    ) -> None:
+        self._data = data
+        self._exc = exc
+        self.calls: list[tuple[Path, TraitSummary]] = []
+
+    async def generate_avatar(self, portrait_path: Path, summary: TraitSummary) -> bytes:
+        self.calls.append((portrait_path, summary))
+        if self._exc is not None:
+            raise self._exc
+        return self._data
+
+
+def _send_recorder(delivered: bool = True, exc: Exception | None = None):
+    """A ``SendPhotoFn`` double recording every call, optionally failing."""
+    calls: list[tuple[int, Path, str]] = []
+
+    async def send_photo(chat_id: int, photo: Path, caption: str) -> bool:
+        calls.append((chat_id, photo, caption))
+        if exc is not None:
+            raise exc
+        return delivered
+
+    return send_photo, calls
+
+
+def _at_converting(
+    store: InMemorySessionStore,
+    tmp_path: Path,
+    chat_id: int = 1,
+    *,
+    with_summary: bool = True,
+    with_portrait: bool = True,
+) -> TraitSummary | None:
+    """Place a chat at CONVERTING with a stored summary and a portrait file."""
+    summary = TraitSummary(summary=SUMMARY_SENTINEL, traits=["bold"])
+    state = store.get(chat_id)
+    state.stage = Stage.CONVERTING
+    state.interview = InterviewState(
+        answers=[InterviewAnswer(question=f"Q{i}?", answer=f"a{i}") for i in range(1, TOTAL_QUESTIONS)],
+        summary=summary if with_summary else None,
+    )
+    if with_portrait:
+        portrait = photo_dest(chat_id, root=tmp_path)
+        portrait.parent.mkdir(parents=True, exist_ok=True)
+        portrait.write_bytes(b"portrait-bytes")
+    return summary if with_summary else None
+
+
+def test_converting_success_writes_sends_advances_and_cleans_up(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    summary = _at_converting(store, tmp_path)
+    converter = FakeConverter()
+    send_photo, sent = _send_recorder(delivered=True)
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply is None
+    assert store.get(1).stage is Stage.SCRIPTING
+    # The converter was called with the portrait path and the stored summary.
+    assert converter.calls == [(photo_dest(1, root=tmp_path), summary)]
+    # The avatar was written, sent with the canned caption, then deleted.
+    assert sent == [(1, avatar_dest(1, root=tmp_path), CONVERTER_CAPTION)]
+    assert not avatar_dest(1, root=tmp_path).exists()
+    # The portrait itself is untouched.
+    assert photo_dest(1, root=tmp_path).exists()
+
+
+def test_converting_missing_portrait_short_circuits(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path, with_portrait=False)
+    converter = FakeConverter()
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply == CONVERTER_MISSING_PORTRAIT_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert converter.calls == []  # the model is never called
+    assert sent == []  # no send is attempted
+
+
+def test_converting_missing_summary_short_circuits(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path, with_summary=False)
+    converter = FakeConverter()
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply == CONVERTER_MISSING_PORTRAIT_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert converter.calls == []
+    assert sent == []
+
+
+def test_converting_no_interview_state_short_circuits(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    state = store.get(1)
+    state.stage = Stage.CONVERTING  # no interview at all
+    portrait = photo_dest(1, root=tmp_path)
+    portrait.parent.mkdir(parents=True, exist_ok=True)
+    portrait.write_bytes(b"portrait-bytes")
+    converter = FakeConverter()
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply == CONVERTER_MISSING_PORTRAIT_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert converter.calls == []
+    assert sent == []
+
+
+def test_converting_converter_failure_returns_retry_and_cleans_up(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    stale = avatar_dest(1, root=tmp_path)
+    stale.write_bytes(b"stale-avatar")  # a leftover from an earlier crash
+    converter = FakeConverter(exc=RuntimeError("gemini down"))
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply == CONVERTER_FAILURE_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert sent == []
+    assert not stale.exists()  # no generated file is left behind
+
+
+def test_converting_send_failure_returns_retry_and_deletes_avatar(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    converter = FakeConverter()
+    send_photo, _ = _send_recorder(delivered=False)
+    avatar = avatar_dest(1, root=tmp_path)
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply == CONVERTER_FAILURE_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert not avatar.exists()
+
+
+def test_converting_send_exception_returns_retry_and_never_raises(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    converter = FakeConverter()
+    send_photo, _ = _send_recorder(exc=RuntimeError("telegram down"))
+    avatar = avatar_dest(1, root=tmp_path)
+
+    reply = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert reply == CONVERTER_FAILURE_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert not avatar.exists()
+
+
+def test_converting_retry_after_failure_succeeds(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    flaky = FakeConverter(exc=RuntimeError("gemini down"))
+    send_photo, sent = _send_recorder()
+
+    failed = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=flaky, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+    assert failed == CONVERTER_FAILURE_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+
+    working = FakeConverter()
+    retried = asyncio.run(
+        orchestrator.handle_converting_update(
+            store, 1, converter=working, send_photo=send_photo, media_root=tmp_path
+        )
+    )
+
+    assert retried is None
+    assert store.get(1).stage is Stage.SCRIPTING
+    assert working.calls  # the second attempt reached the model
+    assert sent == [(1, avatar_dest(1, root=tmp_path), CONVERTER_CAPTION)]
+
+
+def test_converting_failure_logs_type_and_message_only(caplog, tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    converter = FakeConverter(exc=RuntimeError("gemini down"))
+    send_photo, _ = _send_recorder()
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(
+            orchestrator.handle_converting_update(
+                store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+            )
+        )
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors
+    assert any("RuntimeError" in r.getMessage() and "gemini down" in r.getMessage() for r in errors)
+    # No traceback (it can embed the request payload / image bytes), and no
+    # summary or caption text in the logs.
+    assert all(r.exc_info is None for r in errors)
+    assert SUMMARY_SENTINEL not in caplog.text
+    assert CONVERTER_CAPTION not in caplog.text
+
+
+def test_converting_success_logs_outcome_but_never_image_bytes(caplog, tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    converter = FakeConverter()
+    send_photo, _ = _send_recorder()
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(
+            orchestrator.handle_converting_update(
+                store, 1, converter=converter, send_photo=send_photo, media_root=tmp_path
+            )
+        )
+
+    assert "converter done" in caplog.text
+    assert IMAGE_SENTINEL.decode() not in caplog.text
+    assert SUMMARY_SENTINEL not in caplog.text
+    assert CONVERTER_CAPTION not in caplog.text
