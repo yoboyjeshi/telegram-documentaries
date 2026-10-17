@@ -1,4 +1,4 @@
-"""Only conversion runs in the background; Telegram update handlers stay sequential."""
+"""Conversion and scripting share background tasks; update handlers stay sequential."""
 from __future__ import annotations
 
 import asyncio
@@ -29,7 +29,7 @@ class ConversionTasks:
         if self._closed or self.active(chat_id):
             return False
         version = self.store.version(chat_id)
-        task = asyncio.create_task(work(version), name=f"converter-{chat_id}-{version}")
+        task = asyncio.create_task(work(version), name=f"pipeline-{chat_id}-{version}")
         self._active[chat_id] = task
         self._all.add(task)
 
@@ -40,7 +40,7 @@ class ConversionTasks:
             if not done.cancelled():
                 error = done.exception()
                 if error is not None:
-                    logger.error("Conversion task failed chat_id=%s type=%s",
+                    logger.error("Pipeline task failed chat_id=%s type=%s",
                                  chat_id, type(error).__name__)
         task.add_done_callback(finished)
         return True
@@ -67,4 +67,4 @@ class ConversionTasks:
         if self._all:
             _, pending = await asyncio.wait(tuple(self._all), timeout=5)
             if pending:
-                logger.warning("Conversion shutdown pending count=%s", len(pending))
+                logger.warning("Pipeline shutdown pending count=%s", len(pending))

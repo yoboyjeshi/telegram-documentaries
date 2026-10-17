@@ -13,7 +13,7 @@ Upload a portrait photo in Telegram and the bot runs a five-stage pipeline:
 
 Everything happens inside Telegram. There is no web frontend.
 
-> **Current status:** Features 1–4 are implemented. The bot connects via long
+> **Current status:** Features 1–5 are implemented (Feature 5 phone test pending). The bot connects via long
 > polling; `/start` and `/restart` greet, reset the chat, purge its temp media,
 > and ask for a photo. Send a portrait photo and the **Bouncer** — a Google ADK
 > `gemini-3.1-flash-lite` agent — confirms there's a human face, advancing the
@@ -25,14 +25,17 @@ Everything happens inside Telegram. There is no web frontend.
 > The **Converter** (`gemini-3.1-flash-image`, a Google ADK agent) then
 > reimagines your original portrait as a hybrid-animal avatar matching those
 > traits and sends it back as a Telegram photo with a one-line documentary
-> caption, advancing the chat to `SCRIPTING` — nothing happens after that yet.
+> caption, advancing the chat to `SCRIPTING`. The **Scripter** then uses
+> `gemini-3.1-flash-lite` through Google ADK to write and send one affectionate
+> nature-documentary paragraph, at most 90 words. The delivered text is stored
+> for Feature 6 and the chat stops at `NARRATING`, without audio.
 > The generated avatar is written to the chat's temp dir (`avatar.png` or `avatar.jpg`, matching decoded format) and
 > deleted once sent; `/restart` purges it along with the portrait. If
 > generation or the photo send fails, the bot asks you to try again and leaves
 > the chat at `CONVERTING` so your next message retries. A photo sent
 > mid-interview gets a gentle redirect; a blank message re-asks the current
 > question; an unknown command nudges you to answer or `/restart`. The
-> remaining stages above (Scripter, Narrator) land in later features.
+> remaining Narrator stage lands in Feature 6.
 
 ## Quickstart
 
@@ -90,7 +93,7 @@ The project contract lives in `SPECS/`:
 Never hard-code, commit, or log secrets. `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` are read from `.env` only; `.env.example` documents the required keys.
 
 ## Converter hardening (Feature 4)
-Only conversion runs as a tracked per-chat background task. Telegram update
+Conversion and scripting share one tracked per-chat background task. Telegram update
 handlers remain sequential. Both `/start` and `/restart` invalidate the old
 session before cancellation and purge its media; late results cannot initiate
 a photo send, advance the new session, or delete its files. A send already
@@ -104,4 +107,26 @@ Generated images are cleaned on success, failure and cancellation. A filesystem
 refusing deletion is logged without rolling back an already-delivered image.
 
 Earlier-stage interruptibility and wider resilience remain Feature 7 work.
-Live Codio/phone verification is still required before merging Feature 4.
+Feature 4 phone tests passed and PR #4 was merged at `3dc2ad4`.
+
+## Scripter (Feature 5)
+The Scripter reads only the stored `TraitSummary`, never the photo or avatar.
+Traits are labelled untrusted data, not instructions. Its fixed prompt requests
+British documentary narration: grand, affectionate, PG, and never mocking.
+The exact avatar species is not available, so narration must not invent it.
+
+`NarrationScript` validates a strict plain-text paragraph (1–90 whitespace-separated
+words), without Markdown/HTML, emoji, stage directions or internal line breaks.
+Invalid output is rejected, never truncated. Generation is capped at 120 seconds
+and each send at 30 seconds. Failed generation, validation or delivery leaves
+`SCRIPTING` unchanged and offers a text-message retry. Photos and non-reset
+commands also retry only scripting, without regenerating the avatar. Missing
+traits prompt `/restart`. The narration is saved only after successful delivery.
+
+Both reset commands cancel scripting, clear stored narration and purge media.
+Late results cannot initiate stale sends or overwrite the new session. An already
+accepted Telegram message cannot be recalled, and a lost send acknowledgement
+can cause a duplicate on retry; delivery is not exactly-once.
+
+Feature 5 must pass the Codio phone checklist in
+`SPECS/2026-10-18-scripter/validation.md` before merge. No Narrator/TTS is implemented.

@@ -134,3 +134,12 @@ def apply_bouncer_verdict(
         return None
     store.set_stage(chat_id, Stage.AWAITING_PHOTO)
     return refusal_text(chat_id)
+
+
+SCRIPTER_FAILURE_TEXT = (
+    "My documentary writer is having a moment. Send a text message to try again, "
+    "or /restart to start over."
+)
+SCRIPTER_MISSING_SUMMARY_TEXT = (
+    "I seem to have lost your interview notes. Send /restart and we'll begin again."
+)

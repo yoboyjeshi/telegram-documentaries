@@ -37,6 +37,7 @@ class InMemorySessionStore:
         state = self.get(chat_id)
         state.stage = Stage.GREETING
         state.interview = None
+        state.narration_text = None
         return state
 
     def set_stage(self, chat_id: int, stage: Stage) -> SessionState:

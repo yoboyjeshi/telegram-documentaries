@@ -110,3 +110,4 @@ class SessionState(BaseModel):
     chat_id: int
     stage: Stage = Stage.GREETING
     interview: InterviewState | None = None
+    narration_text: str | None = None

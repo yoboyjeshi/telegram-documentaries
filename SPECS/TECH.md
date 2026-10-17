@@ -11,7 +11,7 @@ Python 3.11+, running locally in Codio during development.
   - **In use (Feature 2):** the Bouncer is a real ADK `LlmAgent` (`gemini-3.1-flash-lite`, multimodal) behind a typed interface `Bouncer.inspect(image_path: Path) -> BouncerVerdict` (`app/bouncer.py`); `google-adk` is pinned in `requirements.txt`. The verdict is parsed via a Pydantic `output_schema` (schema, not regex). Unit tests inject a fake runner, so no network is used.
   - **In use (Feature 3):** the Interviewer is a real ADK `LlmAgent` (`gemini-3.1-flash-lite`) behind a typed interface `Interviewer` with `next_question(history) -> InterviewQuestion` and `summarise(history) -> TraitSummary` (`app/interviewer.py`). Both outputs are parsed via a Pydantic `output_schema` (schema, not regex). The fixed interview length is `TOTAL_QUESTIONS = 6`. The API key is held privately and never logged; `LazyInterviewer` builds the ADK delegate on first use (startup needs no key). Unit tests inject fake `question_runner`/`summary_runner` seams, so no network is used.
   - **In use (Feature 4):** the Converter is a real ADK `LlmAgent` (`gemini-3.1-flash-image`) behind a typed interface `Converter.generate_avatar(portrait_path: Path, summary: TraitSummary) -> bytes` (`app/converter.py`). It returns the raw image bytes and does **no** filesystem work (it never sees `chat_id`); the orchestrator writes those bytes to `avatar_dest(chat_id)` (`<chat dir>/avatar.png` or `avatar.jpg`, matching decoded PNG/JPEG). The API key is held privately and never logged, and `LazyConverter` builds the ADK delegate on first use. Unit tests inject a fake `runner`, so no network is used.
-  - **Orchestrator seam (Features 3–4):** `app/orchestrator.py` owns the `INTERVIEW`-stage routing (`start_interview`, `handle_interview_update`) and drives progression: one question at a time, commit-only-on-success, `INTERVIEW -> CONVERTING` after the final answer. The `CONVERTING`-stage step (`handle_converting_update`) generates one avatar, writes then sends it, advances `CONVERTING -> SCRIPTING` on success, and deletes the generated file; any failure leaves the stage at `CONVERTING` for a retry. The photo send is the injected typed `SendPhotoFn = Callable[[int, Path, str], Awaitable[bool]]` built in `bot.py` over `safe_send_photo` (mirroring `safe_send_message`). `bot.dispatch` only delegates: it routes updates at `CONVERTING` to the step (retry/self-heal) and runs it once after the interview acknowledgement. `build_application` registers a catch-all `MessageHandler(filters.COMMAND, ...)` **last**, so unknown commands reach the dispatcher without shadowing `/start`/`/restart`. Nothing runs after `SCRIPTING` yet.
+  - **Orchestrator seam (Features 3–4):** `app/orchestrator.py` owns the `INTERVIEW`-stage routing (`start_interview`, `handle_interview_update`) and drives progression: one question at a time, commit-only-on-success, `INTERVIEW -> CONVERTING` after the final answer. The `CONVERTING`-stage step (`handle_converting_update`) generates one avatar, writes then sends it, advances `CONVERTING -> SCRIPTING` on success, and deletes the generated file; any failure leaves the stage at `CONVERTING` for a retry. The photo send is the injected typed `SendPhotoFn = Callable[[int, Path, str], Awaitable[bool]]` built in `bot.py` over `safe_send_photo` (mirroring `safe_send_message`). `bot.dispatch` only delegates: it routes updates at `CONVERTING` to the step (retry/self-heal) and runs it once after the interview acknowledgement. `build_application` registers a catch-all `MessageHandler(filters.COMMAND, ...)` **last**, so unknown commands reach the dispatcher without shadowing `/start`/`/restart`. The Scripter now runs automatically after `SCRIPTING` (see Feature 5 below).
 - Gemini 3.1 models:
   - Bouncer, Interviewer, Scripter: gemini-3.1-flash-lite
   - Converter: gemini-3.1-flash-image
@@ -62,4 +62,29 @@ No web frontend, no webhook server, no database (in-memory per-chat state plus t
 - Generation deadline: 120 seconds. Photo-send deadline: 30 seconds.
 - Filesystem failures use the same safe retry path. Finally cleanup only acts on
   the owning session. Cleanup failure after delivery does not roll back SCRIPTING.
-- No Scripter/Narrator work. No model-ID changes. MISSION.md unchanged.
+- Feature 4 made no Scripter/Narrator changes. No model-ID changes. MISSION.md unchanged.
+
+## Feature 5: Scripter implementation
+- `app/scripter.py`: typed `Scripter.write_script(TraitSummary) -> NarrationScript`,
+  `AdkScripter`, and `LazyScripter`; `gemini-3.1-flash-lite` with a fresh ADK
+  session for every generation. No tools, image analysis or new dependencies.
+- Fixed instructions keep traits as labelled untrusted JSON data. Output persona:
+  authoritative British nature documentary, grand, affectionate, lightly humorous,
+  PG. No personal-fact invention or assumptions about the avatar's exact species.
+- Strict `NarrationScript.text`: trim outside whitespace, 1–90 whitespace-separated
+  words, one paragraph, no Markdown/HTML, emoji, stage directions or controls;
+  at most one Telegram message. Revalidate injected results at the send boundary.
+- `SessionState.narration_text: str | None` is cleared by both reset commands.
+- `handle_scripting_update` generates, validates and sends, then stores the exact
+  delivered text and advances `SCRIPTING -> NARRATING` without an intervening
+  await. No audio or automatic work at `NARRATING`.
+- Generation deadline 120s; narration and notification sends 30s. Missing summary
+  prompts `/restart`. Other failures offer a later update retry, leave the session
+  unchanged, and log metadata only. A failed retry notification is not retried.
+- Converter continues into scripting inside the SAME `ConversionTasks` worker and
+  session version. SCRIPTING retries start only a scripting worker in that registry.
+  Live handlers remain sequential; direct tests can explicitly inject a Scripter.
+- Stage/version/cancellation checks surround awaited work. Reset invalidates before
+  cancellation; shutdown uses the existing hook. Already-accepted Telegram messages
+  cannot be recalled, and lost acknowledgements do not permit exactly-once delivery.
+- Existing earlier-stage logging/privacy cleanup remains Feature 7, not part of this PR.
