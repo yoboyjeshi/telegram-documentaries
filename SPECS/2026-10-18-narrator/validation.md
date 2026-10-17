@@ -4,8 +4,10 @@
 
 Implementation passed the initial Windows automated gates. The first Codio run
 exposed a Python 3.11 cancellation defect, documented below with its correction.
-Native Codio re-verification, phone testing, publication and merge are pending.
-No live Gemini or Telegram result is claimed.
+The cancellation correction subsequently passed native Codio gates and PR #6 was
+published without merging. Phone testing exposed a Scripter schema compatibility
+error before narration; see the latest correction below. Voice acceptance and
+merge remain pending.
 
 Baseline: merged main `0dec5956c42201538d8c6adb1fa3ef5762d96fe7`.
 Branch: `feature/2026-10-18-narrator`.
@@ -171,3 +173,39 @@ The full suite also passed with the exact upstream Python 3.11.2 wait_for
 functions replayed: **790 passed in 13.98s**, including real FFmpeg. This remains
 a semantic replay on Python 3.13, not a native Codio result.
 
+
+## Phone-test Scripter compatibility correction (2026-10-18)
+
+The user-provided Codio screenshot confirmed the cancellation correction at
+97d0db7: Python 3.11.2, 790 passed, Ruff clean and mypy clean on 21 files.
+PR #6 is published; no merge or auto-merge is authorized.
+
+The first phone run produced an avatar but failed at Scripter, before TTS.
+Gemini rejected additional_properties in the serialized responseSchema. An
+HTTP-mocked test using the real ADK and google-genai 2.31 client reproduced that
+exact outgoing field before the fix (1 failed, 4 passed). No live API was called
+by the assistant.
+
+The minimal correction removes only additionalProperties from the exported
+Pydantic JSON schema via json_schema_extra. NarrationScript remains the same
+ADK output_schema class; strict typing, extra-field rejection, forced instance
+revalidation and paragraph/word limits remain enabled locally. The callback
+uses Pydantic's JsonDict annotation. Dependencies, model and prompts are unchanged.
+
+The new wire-level regression asserts the actual serialized request schema and
+successful ADK parsing with only HTTP replaced. Four additional cases prove
+extra fields, non-string text, excess words and multiline text still fail local
+validation. Existing tests/assertions are unchanged. Independent read-only
+source review found no blockers; the reviewer did not execute tests.
+
+Final corrected local gates, Windows Python 3.13.12 with networking blocked:
+- Unchanged scripts/test -q: **795 passed in 9.45s**, no skips, real FFmpeg included.
+- Unchanged scripts/hooks: Ruff clean; mypy clean on 21 source files.
+- All 285 original baseline test bodies and all 44 delivered codec test bodies
+  remain unchanged. MISSION.md and gate scripts remain byte-identical to main;
+  .env remains absent locally, ignored and untracked.
+
+This new correction still requires native Codio gates and phone acceptance.
+Restarting the bot loads the fix but clears its in-memory interview state, so
+phone testing must start a fresh interview after deployment. No playback success
+is claimed. Keep the same PR #6 unmerged, with auto-merge disabled.
