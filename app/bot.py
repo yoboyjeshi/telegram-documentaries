@@ -18,6 +18,7 @@ from telegram.ext import (
 from app import orchestrator
 from app.bouncer import Bouncer, LazyBouncer
 from app.config import Settings
+from app.conversion_tasks import ConversionTasks
 from app.converter import Converter, LazyConverter
 from app.handlers import handle_restart, handle_start, handle_text
 from app.interviewer import Interviewer, LazyInterviewer
@@ -41,8 +42,8 @@ async def safe_send_message(bot: Bot, chat_id: int, text: str) -> bool:
     try:
         await bot.send_message(chat_id=chat_id, text=text)
         return True
-    except Exception:
-        logger.exception("Failed to send message to chat_id=%s", chat_id)
+    except Exception as exc:  # noqa: BLE001 - guarded sends must not crash the poller
+        logger.error("Failed to send message chat_id=%s type=%s", chat_id, type(exc).__name__)
         return False
 
 
@@ -69,8 +70,8 @@ async def safe_send_photo(bot: Bot, chat_id: int, path: Path, caption: str) -> b
     try:
         await bot.send_photo(chat_id=chat_id, photo=path, caption=caption)
         return True
-    except Exception:
-        logger.exception("Failed to send photo to chat_id=%s", chat_id)
+    except Exception as exc:  # noqa: BLE001 - guarded sends must not crash the poller
+        logger.error("Failed to send photo chat_id=%s type=%s", chat_id, type(exc).__name__)
         return False
 
 
@@ -93,6 +94,7 @@ async def dispatch(
     converter: Converter | None = None,
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
+    conversion_tasks: ConversionTasks | None = None,
 ) -> str | None:
     """Route an update to the right handler and send the reply.
 
@@ -111,6 +113,29 @@ async def dispatch(
     stage = store.get(chat_id).stage
     ran_converter = False
 
+    async def convert() -> str | None:
+        assert converter is not None and send_photo is not None
+        if conversion_tasks is None:
+            # Explicit awaitable seam for callers/tests; the live app always supplies a registry.
+            return await orchestrator.handle_converting_update(
+                store, chat_id, converter=converter, send_photo=send_photo, media_root=media_root
+            )
+
+        async def work(version: int) -> None:
+            result = await orchestrator.handle_converting_update(
+                store, chat_id, converter=converter, send_photo=send_photo,
+                media_root=media_root, session_version=version,
+            )
+            if result is not None and store.version(chat_id) == version:
+                await safe_send_message(bot, chat_id, result)
+
+        conversion_tasks.start(chat_id, work)
+        return None
+
+    if (incoming.kind == "command" and incoming.command in ("start", "restart")
+            and conversion_tasks is not None):
+        conversion_tasks.cancel(chat_id)
+
     if incoming.kind == "command" and incoming.command == "start":
         reply: str | None = handle_start(store, incoming, media_root=media_root)
     elif incoming.kind == "command" and incoming.command == "restart":
@@ -120,13 +145,7 @@ async def dispatch(
         if converter is None or send_photo is None:
             logger.warning("Update at CONVERTING but no Converter is configured")
             return None
-        reply = await orchestrator.handle_converting_update(
-            store,
-            chat_id,
-            converter=converter,
-            send_photo=send_photo,
-            media_root=media_root,
-        )
+        reply = await convert()
         ran_converter = True
     elif stage is Stage.INTERVIEW and incoming.kind in (
         "text",
@@ -171,13 +190,7 @@ async def dispatch(
         if converter is None or send_photo is None:
             logger.warning("Chat at CONVERTING but no Converter is configured")
         else:
-            follow_up = await orchestrator.handle_converting_update(
-                store,
-                chat_id,
-                converter=converter,
-                send_photo=send_photo,
-                media_root=media_root,
-            )
+            follow_up = await convert()
             if follow_up is not None:
                 await safe_send_message(bot, chat_id, follow_up)
 
@@ -194,6 +207,7 @@ async def dispatch_safely(
     converter: Converter | None = None,
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
+    conversion_tasks: ConversionTasks | None = None,
 ) -> str | None:
     """Run :func:`dispatch`, delivering a friendly message if it raises.
 
@@ -210,6 +224,7 @@ async def dispatch_safely(
             converter=converter,
             send_photo=send_photo,
             media_root=media_root,
+            conversion_tasks=conversion_tasks,
         )
     except Exception:
         logger.exception("Unhandled error while handling update")
@@ -239,9 +254,15 @@ def build_application(
 ) -> Application:
     """Build the long-polling ``Application`` with handlers and an error backstop."""
     session_store = store or InMemorySessionStore()
+    conversion_tasks = ConversionTasks(session_store)
+
+    async def stop_conversions(application: Application) -> None:
+        await conversion_tasks.close()
+
     application = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token.get_secret_value())
+        .post_stop(stop_conversions)
         .build()
     )
     bouncer = LazyBouncer(settings.require_gemini_key)
@@ -258,6 +279,7 @@ def build_application(
             converter=converter,
             send_photo=make_send_photo(context.bot),
             media_root=MEDIA_ROOT,
+            conversion_tasks=conversion_tasks,
         )
 
     application.add_handler(CommandHandler("start", _handle))

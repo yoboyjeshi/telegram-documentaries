@@ -88,3 +88,28 @@ scripts/
 
 ## Implementation deviations
 _To be filled in during implementation (any deviation from this plan recorded here)._
+
+## Approved hardening addendum (2026-10-18)
+This section supersedes conflicting details in the original draft above.
+- Keep the existing Feature 4 build and branch. No rebuild or later agents.
+- Only conversion is a cancellable per-chat background task in the live app;
+  update handlers stay sequential. Registry deduplicates work and invalidates
+  session ownership before cancellation. Late work cannot send/advance/clean
+  a new session. Both reset commands use this path; shutdown cancels tasks.
+- Preserve CancelledError. The image-generation and photo-send deadlines are
+  120 seconds and 30 seconds respectively. Ordinary failures offer retry while
+  retaining CONVERTING. Missing portrait/summary asks for /restart.
+- Raw exception text is NOT safe logging. Converter/send errors record metadata
+  only, including filesystem failures; no traceback or payload text.
+- PNG/JPEG bytes are decoded/validated with Pillow, MIME checked at the ADK
+  boundary, and saved with matching extension. Reject corrupt, unsupported or
+  oversized output (10 MiB / 20 million pixels). Pillow is an explicit addition
+  to the original no-new-dependencies plan, needed for actual decoding.
+- Finally cleanup covers failed writes, sends, generation and cancellation,
+  but only while the task owns the session. Reset purges the whole chat folder.
+  An unlink failure logs safely; delivered photos never roll back for cleanup.
+- Existing 196 test cases retained: invalid byte-string fixtures upgraded to
+  real images and the old raw-error logging assertion strengthened. 28 added
+  cases cover the approved hardening. Real model/Telegram phone checks pending.
+- Telegram cannot recall an already accepted send. Provider calls that ignore
+  cancellation cannot be forcibly stopped, but their late results are invalid.

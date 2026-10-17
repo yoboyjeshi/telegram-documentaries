@@ -14,6 +14,7 @@ never answer text, summary text, image bytes, the caption, or keys.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -33,6 +34,7 @@ from app.handlers import (
     INTERVIEW_REPROMPT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
 )
+from app.image_format import image_suffix
 from app.interviewer import TOTAL_QUESTIONS, Interviewer
 from app.logging_config import guard_errors, logged
 from app.media import MEDIA_ROOT, avatar_dest, photo_dest
@@ -70,18 +72,8 @@ def _log_interviewer_failure(chat_id: int, exc: Exception) -> None:
 
 
 def _log_converter_failure(chat_id: int, exc: Exception) -> None:
-    """Log a converter failure as type (+ short capped message) only.
-
-    A full traceback can embed the request payload (portrait image bytes), so
-    we deliberately log no ``exc_info`` and never the image bytes, the caption,
-    or the trait-summary text.
-    """
-    logger.error(
-        "Converter failed chat_id=%s: %s: %s",
-        chat_id,
-        type(exc).__name__,
-        str(exc)[:_FAILURE_MESSAGE_MAX],
-    )
+    """Log metadata only: exception messages may contain keys and model payloads."""
+    logger.error("Converter failed chat_id=%s type=%s", chat_id, type(exc).__name__)
 
 
 @logged
@@ -182,8 +174,11 @@ def _delete_quietly(path: Path) -> None:
         logger.warning("Could not delete generated avatar path=%s", path.name)
 
 
+CONVERSION_TIMEOUT_SECONDS = 120
+PHOTO_SEND_TIMEOUT_SECONDS = 30
+
+
 @logged
-@guard_errors
 async def handle_converting_update(
     store: InMemorySessionStore,
     chat_id: int,
@@ -191,52 +186,57 @@ async def handle_converting_update(
     converter: Converter,
     send_photo: SendPhotoFn,
     media_root: Path | None = None,
+    session_version: int | None = None,
 ) -> str | None:
-    """Run the Converter step: generate one avatar, send it, advance, then stop.
+    """Send one validated image; all exits clean only the owning session's files.
 
-    Order on success: read the stored summary and portrait -> generate the
-    image bytes -> write them to ``avatar_dest`` -> send the photo with the
-    canned caption -> advance ``CONVERTING -> SCRIPTING`` -> delete the
-    avatar -> return ``None`` (nothing extra to send beyond the photo).
-
-    A missing portrait file or summary returns
-    :data:`~app.handlers.CONVERTER_MISSING_PORTRAIT_TEXT` without calling the
-    model. Any failure (converter raises, send returns ``False``, send raises)
-    logs type + message only, deletes any generated file, leaves the stage at
-    ``CONVERTING`` for a retry, and returns
-    :data:`~app.handlers.CONVERTER_FAILURE_TEXT` -- it never raises.
+    Cancellation is deliberately not caught. Reset invalidates ownership before
+    cancellation, so a delayed old task cannot send, commit, or delete new media.
     """
-    state = store.get(chat_id)
-    summary = state.interview.summary if state.interview is not None else None
-    portrait = photo_dest(chat_id, root=media_root or MEDIA_ROOT)
-    avatar = avatar_dest(chat_id, root=media_root or MEDIA_ROOT)
+    version = store.version(chat_id) if session_version is None else session_version
+    root = media_root or MEDIA_ROOT
 
-    if summary is None or not portrait.exists():
-        logger.warning("Converter missing portrait or summary chat_id=%s", chat_id)
-        return CONVERTER_MISSING_PORTRAIT_TEXT
+    def check_current() -> None:
+        task = asyncio.current_task()
+        if (store.version(chat_id) != version
+                or store.get(chat_id).stage is not Stage.CONVERTING
+                or (task is not None and task.cancelling())):
+            raise asyncio.CancelledError
 
+    check_current()
     try:
-        data = await converter.generate_avatar(portrait, summary)
-    except Exception as exc:  # noqa: BLE001 - a model error must not crash the bot
+        state = store.get(chat_id)
+        summary = state.interview.summary if state.interview is not None else None
+        portrait = photo_dest(chat_id, root=root)
+        if summary is None or not portrait.is_file():
+            logger.warning("Converter missing portrait or summary chat_id=%s", chat_id)
+            return CONVERTER_MISSING_PORTRAIT_TEXT
+
+        async with asyncio.timeout(CONVERSION_TIMEOUT_SECONDS) as deadline:
+            data = await converter.generate_avatar(portrait, summary)
+        check_current()
+        if deadline.expired():
+            raise TimeoutError
+        avatar = avatar_dest(chat_id, root=root, suffix=image_suffix(data))
+        avatar.write_bytes(data)
+        async with asyncio.timeout(PHOTO_SEND_TIMEOUT_SECONDS) as send_deadline:
+            delivered = await send_photo(chat_id, avatar, CONVERTER_CAPTION)
+        check_current()
+        if send_deadline.expired():
+            raise TimeoutError
+        if not delivered:
+            logger.error("Converter photo send not delivered chat_id=%s", chat_id)
+            return CONVERTER_FAILURE_TEXT
+
+        store.set_stage(chat_id, Stage.SCRIPTING)
+        logger.info("converter done chat_id=%s bytes=%d", chat_id, len(data))
+        return None
+    except Exception as exc:  # noqa: BLE001 - external and filesystem failures stay retryable
+        check_current()
         _log_converter_failure(chat_id, exc)
-        _delete_quietly(avatar)
         return CONVERTER_FAILURE_TEXT
-
-    avatar.write_bytes(data)
-    try:
-        delivered = await send_photo(chat_id, avatar, CONVERTER_CAPTION)
-    except Exception as exc:  # noqa: BLE001 - a send error must not crash the bot
-        _log_converter_failure(chat_id, exc)
-        _delete_quietly(avatar)
-        return CONVERTER_FAILURE_TEXT
-
-    if not delivered:
-        logger.error("Converter photo send not delivered chat_id=%s", chat_id)
-        _delete_quietly(avatar)
-        return CONVERTER_FAILURE_TEXT
-
-    # Commit only after a successful send, mirroring the Interviewer.
-    store.set_stage(chat_id, Stage.SCRIPTING)
-    _delete_quietly(avatar)
-    logger.info("converter done chat_id=%s bytes=%d", chat_id, len(data))
-    return None
+    finally:
+        # After reset the command owns cleanup. Never unlink a new session's avatar.
+        if store.version(chat_id) == version:
+            for suffix in (".png", ".jpg"):
+                _delete_quietly(avatar_dest(chat_id, root=root, suffix=suffix))

@@ -420,7 +420,9 @@ def test_summary_text_is_never_logged(caplog) -> None:
 
 # --- CONVERTING-stage step (the Converter handoff) ---------------------------
 
-IMAGE_SENTINEL = b"IMAGE_BYTES_sentinel_png"
+from image_fixtures import PNG
+
+IMAGE_SENTINEL = PNG
 
 
 class FakeConverter:
@@ -642,7 +644,7 @@ def test_converting_retry_after_failure_succeeds(tmp_path: Path) -> None:
     assert sent == [(1, avatar_dest(1, root=tmp_path), CONVERTER_CAPTION)]
 
 
-def test_converting_failure_logs_type_and_message_only(caplog, tmp_path: Path) -> None:
+def test_converting_failure_logs_type_only(caplog, tmp_path: Path) -> None:
     store = InMemorySessionStore()
     _at_converting(store, tmp_path)
     converter = FakeConverter(exc=RuntimeError("gemini down"))
@@ -657,7 +659,8 @@ def test_converting_failure_logs_type_and_message_only(caplog, tmp_path: Path) -
 
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert errors
-    assert any("RuntimeError" in r.getMessage() and "gemini down" in r.getMessage() for r in errors)
+    assert any("RuntimeError" in r.getMessage() for r in errors)
+    assert "gemini down" not in caplog.text
     # No traceback (it can embed the request payload / image bytes), and no
     # summary or caption text in the logs.
     assert all(r.exc_info is None for r in errors)
@@ -679,6 +682,6 @@ def test_converting_success_logs_outcome_but_never_image_bytes(caplog, tmp_path:
         )
 
     assert "converter done" in caplog.text
-    assert IMAGE_SENTINEL.decode() not in caplog.text
+    assert repr(IMAGE_SENTINEL) not in caplog.text
     assert SUMMARY_SENTINEL not in caplog.text
     assert CONVERTER_CAPTION not in caplog.text

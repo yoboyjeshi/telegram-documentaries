@@ -14,6 +14,7 @@ class InMemorySessionStore:
 
     def __init__(self) -> None:
         self._sessions: dict[int, SessionState] = {}
+        self._versions: dict[int, int] = {}
 
     def get(self, chat_id: int) -> SessionState:
         """Return the state for ``chat_id``, creating a fresh ``GREETING`` state."""
@@ -21,11 +22,18 @@ class InMemorySessionStore:
             self._sessions[chat_id] = SessionState(chat_id=chat_id)
         return self._sessions[chat_id]
 
+    def version(self, chat_id: int) -> int:
+        return self._versions.get(chat_id, 0)
+
+    def invalidate(self, chat_id: int) -> None:
+        self._versions[chat_id] = self.version(chat_id) + 1
+
     def reset(self, chat_id: int) -> SessionState:
         """Return ``chat_id`` to ``GREETING`` and clear any interview state.
 
         Legal from any stage; a full reset drops interview progress too.
         """
+        self.invalidate(chat_id)
         state = self.get(chat_id)
         state.stage = Stage.GREETING
         state.interview = None

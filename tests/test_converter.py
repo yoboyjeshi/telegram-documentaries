@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from image_fixtures import PNG
 
 from app.config import ConfigurationError
 from app.converter import (
@@ -18,7 +19,7 @@ from app.converter import (
 )
 from app.states import TraitSummary
 
-IMAGE_SENTINEL = b"IMAGE_BYTES_sentinel_png"
+IMAGE_SENTINEL = PNG
 SUMMARY_SENTINEL = "SUMMARY_SENTINEL_bold_explorer"
 
 
@@ -110,7 +111,7 @@ def test_adkconverter_runner_bytes_are_never_logged(tmp_path: Path, caplog) -> N
     with caplog.at_level(logging.DEBUG):
         asyncio.run(converter.generate_avatar(tmp_path / "photo.jpg", _summary()))
 
-    assert IMAGE_SENTINEL.decode() not in caplog.text
+    assert repr(IMAGE_SENTINEL) not in caplog.text
     assert SUMMARY_SENTINEL not in caplog.text
 
 
@@ -166,9 +167,10 @@ def test_image_bytes_extracted_even_when_only_the_image_part_is_present() -> Non
 
 
 def test_first_inline_image_wins() -> None:
-    events = [_final_event(_image_part(b"first"), _image_part(b"second"))]
+    from image_fixtures import image_bytes
+    events = [_final_event(_image_part(IMAGE_SENTINEL), _image_part(image_bytes(color="blue")))]
 
-    assert _image_bytes_from_events(events) == b"first"
+    assert _image_bytes_from_events(events) == IMAGE_SENTINEL
 
 
 def test_non_final_events_are_ignored() -> None:

@@ -2,8 +2,8 @@
 
 How we know Feature 4 is correct and can be merged.
 
-Verification date: **pending**. Branch: `feature/2026-10-17-converter`.
-Status: **drafted — awaiting user review before implementation.**
+Verification date: **2026-10-18 (offline only)**. Branch: `feature/2026-10-17-converter`.
+Status: **built and hardened; offline gates pass; phone test and merge pending.**
 
 ## 1. Automated gates
 - [ ] `scripts/test` passes (all unit tests green, **no network**). — observed count: _TBD_.
@@ -71,3 +71,35 @@ With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, th
 - [ ] Scope guards hold; no secrets committed.
 - [ ] Code review raised no blocking findings.
 - [ ] PR opened against `main` (not merged by the build agent).
+
+## Hardening verification evidence (2026-10-18)
+Base: 8744d2fbf4930bcbcc2099147ca0d574624064d0. Windows, Python 3.13.
+Executed equivalent commands behind scripts/test and scripts/hooks:
+- pytest: 224 passed (196 existing cases, 28 added; no live API calls).
+- ruff check app tests: clean.
+- mypy app: clean, 17 source files.
+
+Red/Green evidence captured during development:
+1. Cancellation: 6 new failures first; implementation yielded 202 passing tests.
+2. Privacy: 2 new failures first; implementation yielded 204 passing tests.
+3. Image validation: 6 failing format cases (one PNG control passed); real image
+   validation and upgraded fixtures yielded 211 passing tests.
+4. Cleanup/deadline: 3 failing cases (one existing cleanup control passed);
+   implementation yielded 215 passing tests.
+5. Additional integration checks: 220 passing tests, including real registered
+   Telegram handler matching, reset during sending, stale cleanup isolation,
+   background retry, and mocked real ADK assembly.
+
+6. Final lifecycle audit reproduced an avatar leak on task-registry close, then
+   fixed ownership cleanup and guarded swallowed cancellation. Four additional
+   cases bring final gates to 224 passed, ruff clean, mypy clean.
+
+Original checklist above is historical. Live checks are NOT marked complete.
+No real keys were loaded, no live bot launched, no photo sent, no PR merged.
+
+Before merge, in Codio:
+1. Preserve .env; install requirements (Pillow added).
+2. Run all gates and phone-test interview -> photo -> SCRIPTING.
+3. /start and /restart during generation: immediate photo prompt, no later avatar.
+4. Retry an API/send failure; test missing portrait and per-chat isolation.
+5. Check media purge, repeat a run without reboot, inspect safe logs.

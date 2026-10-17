@@ -26,7 +26,7 @@ Everything happens inside Telegram. There is no web frontend.
 > reimagines your original portrait as a hybrid-animal avatar matching those
 > traits and sends it back as a Telegram photo with a one-line documentary
 > caption, advancing the chat to `SCRIPTING` — nothing happens after that yet.
-> The generated avatar is written to the chat's temp dir (`avatar.png`) and
+> The generated avatar is written to the chat's temp dir (`avatar.png` or `avatar.jpg`, matching decoded format) and
 > deleted once sent; `/restart` purges it along with the portrait. If
 > generation or the photo send fails, the bot asks you to try again and leaves
 > the chat at `CONVERTING` so your next message retries. A photo sent
@@ -88,3 +88,20 @@ The project contract lives in `SPECS/`:
 
 ## Secrets
 Never hard-code, commit, or log secrets. `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` are read from `.env` only; `.env.example` documents the required keys.
+
+## Converter hardening (Feature 4)
+Only conversion runs as a tracked per-chat background task. Telegram update
+handlers remain sequential. Both `/start` and `/restart` invalidate the old
+session before cancellation and purge its media; late results cannot initiate
+a photo send, advance the new session, or delete its files. A send already
+accepted by Telegram cannot be recalled.
+
+PNG/JPEG output is decoded and validated with Pillow (rerun dependency install).
+Generation has a 120-second deadline; photo sending has a 30-second deadline.
+Failures stay at `CONVERTING` for a text/photo/command retry. Cancellation is not
+a failure notification. Converter/send errors log metadata, never raw exceptions.
+Generated images are cleaned on success, failure and cancellation. A filesystem
+refusing deletion is logged without rolling back an already-delivered image.
+
+Earlier-stage interruptibility and wider resilience remain Feature 7 work.
+Live Codio/phone verification is still required before merging Feature 4.

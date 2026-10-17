@@ -448,7 +448,9 @@ def test_dispatch_other_kind_at_interview_redirects_instead_of_silence() -> None
 # --- Converter wiring: safe_send_photo, handoff, CONVERTING retry -------------
 
 CAPTION_SENTINEL = "CAPTION_SENTINEL_documentary_line"
-IMAGE_SENTINEL = b"IMAGE_BYTES_sentinel_png"
+from image_fixtures import PNG
+
+IMAGE_SENTINEL = PNG
 
 
 def test_safe_send_photo_sends_photo_with_caption() -> None:
