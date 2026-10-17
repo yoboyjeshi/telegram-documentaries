@@ -121,3 +121,11 @@ The existing generic @guard_errors logs tracebacks, so it must **not** wrap the 
 
 
 MISSION.md remains unchanged. No Narrator/TTS work.
+
+## Baseline references
+All reviewed at merged main `3dc2ad4476c0a37085666886b8931c73d2a4bff2`:
+1. `SPECS/ROADMAP.md`: Feature 5 scope and one-feature-per-PR workflow.
+2. `app/states.py`: pipeline stages, transition rules and session contract.
+3. `app/interviewer.py`: lazy ADK setup, injectable runners, output schemas.
+4. `app/conversion_tasks.py`: task deduplication, session ownership, cancellation.
+5. `app/logging_config.py`: existing decorator behavior and privacy limitations.

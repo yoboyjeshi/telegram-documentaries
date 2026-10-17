@@ -26,6 +26,7 @@ from app.logging_config import FRIENDLY_ERROR
 from app.media import MEDIA_ROOT
 from app.orchestrator import SendPhotoFn
 from app.photo_flow import DownloadFn, handle_photo_update
+from app.scripter import LazyScripter, Scripter
 from app.session_store import InMemorySessionStore
 from app.states import Stage
 from app.telegram_adapter import extract_chat_input
@@ -92,6 +93,7 @@ async def dispatch(
     bouncer: Bouncer | None = None,
     interviewer: Interviewer | None = None,
     converter: Converter | None = None,
+    scripter: Scripter | None = None,
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
     conversion_tasks: ConversionTasks | None = None,
@@ -103,6 +105,8 @@ async def dispatch(
     step (the retry / self-heal path); when the interview completes in this
     turn, the Converter step runs right after the acknowledgement. The
     ``ran_converter`` guard ensures the step runs at most once per turn.
+    A configured Scripter continues in that same task after photo delivery;
+    updates at SCRIPTING retry only narration. NARRATING stops the pipeline.
     """
     incoming = extract_chat_input(update)
     if incoming is None:
@@ -113,19 +117,36 @@ async def dispatch(
     stage = store.get(chat_id).stage
     ran_converter = False
 
-    async def convert() -> str | None:
+    async def script(version: int) -> None:
+        assert scripter is not None
+
+        async def send_message(chat: int, text: str) -> bool:
+            return await safe_send_message(bot, chat, text)
+
+        await orchestrator.handle_scripting_update(
+            store, chat_id, scripter=scripter, send_message=send_message,
+            session_version=version,
+        )
+
+    async def convert_step(version: int) -> str | None:
         assert converter is not None and send_photo is not None
+        result = await orchestrator.handle_converting_update(
+            store, chat_id, converter=converter, send_photo=send_photo,
+            media_root=media_root, session_version=version,
+        )
+        if (scripter is not None and store.version(chat_id) == version
+                and store.get(chat_id).stage is Stage.SCRIPTING):
+            # Continue in the SAME tracked task, never start a second task here.
+            await script(version)
+        return result
+
+    async def convert() -> str | None:
         if conversion_tasks is None:
-            # Explicit awaitable seam for callers/tests; the live app always supplies a registry.
-            return await orchestrator.handle_converting_update(
-                store, chat_id, converter=converter, send_photo=send_photo, media_root=media_root
-            )
+            # Explicit awaitable seam; the live app always supplies the registry.
+            return await convert_step(store.version(chat_id))
 
         async def work(version: int) -> None:
-            result = await orchestrator.handle_converting_update(
-                store, chat_id, converter=converter, send_photo=send_photo,
-                media_root=media_root, session_version=version,
-            )
+            result = await convert_step(version)
             if result is not None and store.version(chat_id) == version:
                 await safe_send_message(bot, chat_id, result)
 
@@ -140,6 +161,18 @@ async def dispatch(
         reply: str | None = handle_start(store, incoming, media_root=media_root)
     elif incoming.kind == "command" and incoming.command == "restart":
         reply = handle_restart(store, incoming, media_root=media_root)
+    elif stage is Stage.SCRIPTING:
+        if scripter is None:
+            logger.warning("Update at SCRIPTING but no Scripter is configured")
+            return None
+        if conversion_tasks is None:
+            await script(store.version(chat_id))
+        else:
+            conversion_tasks.start(chat_id, script)
+        return None
+    elif stage is Stage.NARRATING:
+        # Feature 6 is intentionally absent. Reset commands were handled above.
+        return None
     elif stage is Stage.CONVERTING:
         # Retry / self-heal: any update at CONVERTING re-runs the step.
         if converter is None or send_photo is None:
@@ -205,6 +238,7 @@ async def dispatch_safely(
     bouncer: Bouncer | None = None,
     interviewer: Interviewer | None = None,
     converter: Converter | None = None,
+    scripter: Scripter | None = None,
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
     conversion_tasks: ConversionTasks | None = None,
@@ -222,6 +256,7 @@ async def dispatch_safely(
             bouncer=bouncer,
             interviewer=interviewer,
             converter=converter,
+            scripter=scripter,
             send_photo=send_photo,
             media_root=media_root,
             conversion_tasks=conversion_tasks,
@@ -268,6 +303,7 @@ def build_application(
     bouncer = LazyBouncer(settings.require_gemini_key)
     interviewer = LazyInterviewer(settings.require_gemini_key)
     converter = LazyConverter(settings.require_gemini_key)
+    scripter = LazyScripter(settings.require_gemini_key)
 
     async def _handle(update: Update, context: CallbackContext) -> None:
         await dispatch_safely(
@@ -277,6 +313,7 @@ def build_application(
             bouncer=bouncer,
             interviewer=interviewer,
             converter=converter,
+            scripter=scripter,
             send_photo=make_send_photo(context.bot),
             media_root=MEDIA_ROOT,
             conversion_tasks=conversion_tasks,

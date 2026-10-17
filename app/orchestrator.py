@@ -1,15 +1,15 @@
-"""The INTERVIEW and CONVERTING-stage orchestrator.
+"""The INTERVIEW, CONVERTING and SCRIPTING-stage orchestrator.
 
 Owns the ``INTERVIEW``-stage routing and delegates to the typed
 :class:`~app.interviewer.Interviewer` and :class:`~app.converter.Converter`.
 The pure rules live here: one step of progression per valid answer,
 commit-only-on-success, and a friendly retry when a model call fails. The
 ``CONVERTING``-stage step generates one hybrid-animal avatar, sends it, and
-advances to ``SCRIPTING``; nothing happens after ``SCRIPTING`` yet.
+advances to ``SCRIPTING``. The scripting step sends validated narration and
+advances to ``NARRATING``; no audio work runs yet.
 
-Logging stays out of the business logic where possible (``@logged`` /
-``@guard_errors``); the only direct log lines are counts and failure types --
-never answer text, summary text, image bytes, the caption, or keys.
+Converter and Scripter errors log only metadata, never model payloads or raw
+exceptions. Earlier Interviewer logging is unchanged and remains Feature 7 work.
 """
 
 from __future__ import annotations
@@ -33,11 +33,14 @@ from app.handlers import (
     INTERVIEW_PHOTO_REDIRECT_TEXT,
     INTERVIEW_REPROMPT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
+    SCRIPTER_FAILURE_TEXT,
+    SCRIPTER_MISSING_SUMMARY_TEXT,
 )
 from app.image_format import image_suffix
 from app.interviewer import TOTAL_QUESTIONS, Interviewer
 from app.logging_config import guard_errors, logged
 from app.media import MEDIA_ROOT, avatar_dest, photo_dest
+from app.scripter import NarrationScript, Scripter
 from app.session_store import InMemorySessionStore
 from app.states import InterviewAnswer, InterviewState, Stage
 from app.telegram_adapter import ChatInput
@@ -240,3 +243,76 @@ async def handle_converting_update(
         if store.version(chat_id) == version:
             for suffix in (".png", ".jpg"):
                 _delete_quietly(avatar_dest(chat_id, root=root, suffix=suffix))
+
+
+SCRIPTING_TIMEOUT_SECONDS = 120
+SCRIPT_SEND_TIMEOUT_SECONDS = 30
+SendMessageFn = Callable[[int, str], Awaitable[bool]]
+
+
+async def handle_scripting_update(
+    store: InMemorySessionStore,
+    chat_id: int,
+    *,
+    scripter: Scripter,
+    send_message: SendMessageFn,
+    session_version: int | None = None,
+) -> None:
+    """Validate, deliver, then commit narration for the owning SCRIPTING session.
+
+    Notifications are bounded and ownership-guarded too. CancelledError passes
+    through unchanged; logging deliberately never includes exception payloads.
+    """
+    version = store.version(chat_id) if session_version is None else session_version
+
+    def check_current() -> None:
+        task = asyncio.current_task()
+        if (store.version(chat_id) != version
+                or store.get(chat_id).stage is not Stage.SCRIPTING
+                or (task is not None and task.cancelling())):
+            raise asyncio.CancelledError
+
+    async def deliver(text: str) -> None:
+        check_current()
+        async with asyncio.timeout(SCRIPT_SEND_TIMEOUT_SECONDS) as deadline:
+            delivered = await send_message(chat_id, text)
+        check_current()
+        if deadline.expired():
+            raise TimeoutError
+        if not delivered:
+            raise RuntimeError("Message not delivered")
+
+    async def notify(text: str) -> None:
+        try:
+            await deliver(text)
+        except Exception as exc:  # noqa: BLE001 - one bounded notification, never a retry loop
+            check_current()
+            logger.error("Scripter notification failed chat_id=%s stage=SCRIPTING type=%s",
+                         chat_id, type(exc).__name__)
+
+    check_current()
+    state = store.get(chat_id)
+    summary = state.interview.summary if state.interview is not None else None
+    if summary is None:
+        logger.warning("Scripter missing summary chat_id=%s stage=SCRIPTING", chat_id)
+        await notify(SCRIPTER_MISSING_SUMMARY_TEXT)
+        return
+
+    try:
+        async with asyncio.timeout(SCRIPTING_TIMEOUT_SECONDS) as deadline:
+            result = await scripter.write_script(summary)
+        check_current()
+        if deadline.expired():
+            raise TimeoutError
+        # Revalidate even injected/model_construct results at the send boundary.
+        script = NarrationScript.model_validate(result)
+        await deliver(script.text)
+        check_current()
+        state.narration_text = script.text
+        store.set_stage(chat_id, Stage.NARRATING)
+        logger.info("Scripter done chat_id=%s stage=NARRATING", chat_id)
+    except Exception as exc:  # noqa: BLE001 - model/validation/send errors stay retryable
+        check_current()
+        logger.error("Scripter failed chat_id=%s stage=SCRIPTING type=%s",
+                     chat_id, type(exc).__name__)
+        await notify(SCRIPTER_FAILURE_TEXT)
