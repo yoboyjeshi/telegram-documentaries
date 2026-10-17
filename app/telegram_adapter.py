@@ -18,9 +18,10 @@ class ChatInput(BaseModel):
     """A validated, framework-free view of an inbound Telegram message."""
 
     chat_id: int
-    kind: Literal["command", "text", "other"]
+    kind: Literal["command", "text", "photo", "other"]
     text: str | None = None
     command: str | None = None
+    file_id: str | None = None
 
 
 def extract_chat_input(update: object) -> ChatInput | None:
@@ -35,16 +36,37 @@ def extract_chat_input(update: object) -> ChatInput | None:
     try:
         chat_id = int(chat.id)
     except (AttributeError, TypeError, ValueError):
+        logger.debug("Unusable chat id (int() failed); ignoring update", exc_info=True)
         return None
 
     text = getattr(message, "text", None)
-    if not isinstance(text, str):
-        # e.g. a photo/voice message. Not handled yet, so warn rather than ignore.
-        logger.warning("Ignoring unsupported message (no text) chat_id=%s", chat_id)
+    if isinstance(text, str) and text:
+        if text.startswith("/"):
+            command = text.split()[0][1:].split("@", 1)[0]
+            return ChatInput(chat_id=chat_id, kind="command", text=text, command=command)
+        return ChatInput(chat_id=chat_id, kind="text", text=text)
+
+    photo = getattr(message, "photo", None)
+    if photo:
+        try:
+            largest = max(photo, key=lambda p: getattr(p, "file_size", 0))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Photo sizes not comparable (missing file_size?); using last photo chat_id=%s",
+                chat_id,
+                exc_info=True,
+            )
+            largest = photo[-1] if photo else None
+        if largest is not None:
+            file_id = getattr(largest, "file_id", None)
+            if isinstance(file_id, str) and file_id:
+                return ChatInput(
+                    chat_id=chat_id,
+                    kind="photo",
+                    file_id=file_id,
+                )
+        logger.warning("Ignoring unsupported photo (missing file_id) chat_id=%s", chat_id)
         return ChatInput(chat_id=chat_id, kind="other")
 
-    if text.startswith("/"):
-        command = text.split()[0][1:].split("@", 1)[0]
-        return ChatInput(chat_id=chat_id, kind="command", text=text, command=command)
-
-    return ChatInput(chat_id=chat_id, kind="text", text=text)
+    logger.warning("Ignoring unsupported message (no text or photo) chat_id=%s", chat_id)
+    return ChatInput(chat_id=chat_id, kind="other")

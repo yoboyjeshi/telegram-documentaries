@@ -1,6 +1,7 @@
-python-telegram-bot>=21,<23
-pydantic>=2,<3
-python-dotenv>=1,<2
-pytest>=8
-ruff>=0.6
+google-adk==2.11.0
 mypy>=1.11
+pydantic>=2,<3
+pytest>=8
+python-dotenv>=1,<2
+python-telegram-bot>=21,<23
+ruff>=0.6

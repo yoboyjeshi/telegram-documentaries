@@ -13,10 +13,14 @@ Upload a portrait photo in Telegram and the bot runs a five-stage pipeline:
 
 Everything happens inside Telegram. There is no web frontend.
 
-> **Current status:** Feature 1 (Telegram Gateway) is implemented — the bot
-> connects via long polling, `/start` and `/restart` greet and reset the chat,
-> and plain text is echoed. The five stages above are the roadmap; the
-> generative parts land in later features.
+> **Current status:** Features 1–2 are implemented. The bot connects via long
+> polling; `/start` and `/restart` greet, reset the chat, purge its temp media,
+> and ask for a photo. Send a portrait photo and the **Bouncer** — a Google ADK
+> `gemini-3.1-flash-lite` agent — confirms there's a human face, advancing the
+> chat to the interview stage; a non-human photo gets a humorous refusal so you
+> can try again. Plain text is echoed (and, while awaiting a photo, prompts for
+> one). The remaining stages above (Interviewer, Converter, Scripter, Narrator)
+> land in later features.
 
 ## Quickstart
 
