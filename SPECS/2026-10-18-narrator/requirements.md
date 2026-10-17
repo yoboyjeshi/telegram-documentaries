@@ -105,8 +105,8 @@ One successful attempt:
 
 Deadlines: 120 seconds for generation plus normalization/encoding/validation;
 30 seconds for voice sending, and 30 seconds for a single failure/missing-input
-notification. Encoder work also has a 15-second sub-limit within the 120-second
-budget. Preserve explicit deadline.expired() checks for cancellation-resistant
+notification. Encoding plus final decode validation share a 15-second sub-limit
+within the 120-second budget. Preserve explicit deadline.expired() checks for cancellation-resistant
 providers/senders; a late return is not success. asyncio cannot forcibly stop a
 provider that suppresses cancellation forever, but its late result must be unusable.
 

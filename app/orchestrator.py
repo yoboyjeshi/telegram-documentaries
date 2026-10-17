@@ -1,4 +1,4 @@
-"""The INTERVIEW, CONVERTING and SCRIPTING-stage orchestrator.
+"""The INTERVIEW, CONVERTING, SCRIPTING and NARRATING-stage orchestrator.
 
 Owns the ``INTERVIEW``-stage routing and delegates to the typed
 :class:`~app.interviewer.Interviewer` and :class:`~app.converter.Converter`.
@@ -6,9 +6,9 @@ The pure rules live here: one step of progression per valid answer,
 commit-only-on-success, and a friendly retry when a model call fails. The
 ``CONVERTING``-stage step generates one hybrid-animal avatar, sends it, and
 advances to ``SCRIPTING``. The scripting step sends validated narration and
-advances to ``NARRATING``; no audio work runs yet.
+advances to ``NARRATING``; the Narrator delivers voice before terminal ``DONE``.
 
-Converter and Scripter errors log only metadata, never model payloads or raw
+Converter, Scripter and Narrator errors log only metadata, never model payloads or raw
 exceptions. Earlier Interviewer logging is unchanged and remains Feature 7 work.
 """
 
@@ -21,6 +21,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.audio_encoding import ENCODING_TIMEOUT_SECONDS, encode_voice, validate_voice
+from app.audio_format import MAX_AUDIO_BYTES, NarrationAudio, normalize_audio
 from app.converter import Converter
 from app.handlers import (
     CONVERTER_CAPTION,
@@ -33,13 +35,16 @@ from app.handlers import (
     INTERVIEW_PHOTO_REDIRECT_TEXT,
     INTERVIEW_REPROMPT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
+    NARRATOR_FAILURE_TEXT,
+    NARRATOR_MISSING_TEXT,
     SCRIPTER_FAILURE_TEXT,
     SCRIPTER_MISSING_SUMMARY_TEXT,
 )
 from app.image_format import image_suffix
 from app.interviewer import TOTAL_QUESTIONS, Interviewer
 from app.logging_config import guard_errors, logged
-from app.media import MEDIA_ROOT, avatar_dest, photo_dest
+from app.media import MEDIA_ROOT, avatar_dest, narration_dest, photo_dest
+from app.narrator import Narrator
 from app.scripter import NarrationScript, Scripter
 from app.session_store import InMemorySessionStore
 from app.states import InterviewAnswer, InterviewState, Stage
@@ -316,3 +321,110 @@ async def handle_scripting_update(
         logger.error("Scripter failed chat_id=%s stage=SCRIPTING type=%s",
                      chat_id, type(exc).__name__)
         await notify(SCRIPTER_FAILURE_TEXT)
+
+
+NARRATING_TIMEOUT_SECONDS = 120
+VOICE_SEND_TIMEOUT_SECONDS = 30
+SendVoiceFn = Callable[[int, Path], Awaitable[bool]]
+EncodeAudioFn = Callable[[bytes], Awaitable[bytes]]
+ValidateAudioFn = Callable[[bytes], Awaitable[None]]
+
+
+async def handle_narrating_update(
+    store: InMemorySessionStore,
+    chat_id: int,
+    *,
+    narrator: Narrator,
+    send_voice: SendVoiceFn,
+    send_message: SendMessageFn,
+    media_root: Path | None = None,
+    session_version: int | None = None,
+    encode_audio: EncodeAudioFn | None = None,
+    validate_audio: ValidateAudioFn | None = None,
+) -> None:
+    """Render, validate, deliver and only then commit DONE for the owning session.
+
+    Reset owns directory purging. Retired work never writes or removes new files;
+    cancellation is never translated into a retry notification.
+    """
+    version = store.version(chat_id) if session_version is None else session_version
+    root = media_root or MEDIA_ROOT
+    artifact: Path | None = None
+
+    def check_current() -> None:
+        task = asyncio.current_task()
+        if (store.version(chat_id) != version
+                or store.get(chat_id).stage is not Stage.NARRATING
+                or (task is not None and task.cancelling())):
+            raise asyncio.CancelledError
+
+    async def notify(text: str) -> None:
+        try:
+            check_current()
+            async with asyncio.timeout(VOICE_SEND_TIMEOUT_SECONDS) as deadline:
+                delivered = await send_message(chat_id, text)
+            check_current()
+            if deadline.expired():
+                raise TimeoutError
+            if not delivered:
+                raise RuntimeError("Notification not delivered")
+        except Exception as exc:  # noqa: BLE001 - one bounded notification, no loop
+            check_current()
+            logger.error("Narrator notification failed chat_id=%s stage=NARRATING type=%s",
+                         chat_id, type(exc).__name__)
+
+    check_current()
+    text = store.get(chat_id).narration_text
+    if text is None or not text.strip():
+        logger.warning("Narrator missing narration chat_id=%s stage=NARRATING", chat_id)
+        await notify(NARRATOR_MISSING_TEXT)
+        return
+
+    try:
+        async with asyncio.timeout(NARRATING_TIMEOUT_SECONDS) as deadline:
+            result = await narrator.render(text)
+            check_current()
+            if deadline.expired():
+                raise TimeoutError
+            audio = NarrationAudio.model_validate(result)
+            wav_data = normalize_audio(audio)
+            async with asyncio.timeout(ENCODING_TIMEOUT_SECONDS) as codec_deadline:
+                data = await (encode_audio or encode_voice)(wav_data)
+                check_current()
+                if codec_deadline.expired() or deadline.expired():
+                    raise TimeoutError
+                if type(data) is not bytes or not 0 < len(data) <= MAX_AUDIO_BYTES:
+                    raise ValueError("Invalid encoded audio")
+                await (validate_audio or validate_voice)(data)
+                check_current()
+            if codec_deadline.expired():
+                raise TimeoutError
+        check_current()
+        if deadline.expired():
+            raise TimeoutError
+        artifact = narration_dest(chat_id, version, root=root)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(data)
+        check_current()
+        async with asyncio.timeout(VOICE_SEND_TIMEOUT_SECONDS) as send_deadline:
+            delivered = await send_voice(chat_id, artifact)
+        check_current()
+        if send_deadline.expired():
+            raise TimeoutError
+        if not delivered:
+            raise RuntimeError("Voice not delivered")
+        store.set_stage(chat_id, Stage.DONE)
+        logger.info("Narrator done chat_id=%s stage=DONE", chat_id)
+    except Exception as exc:  # noqa: BLE001 - all new boundaries log metadata only
+        check_current()
+        logger.error("Narrator failed chat_id=%s stage=NARRATING type=%s",
+                     chat_id, type(exc).__name__)
+        await notify(NARRATOR_FAILURE_TEXT)
+    finally:
+        # A reset purges the directory. Never touch replacement-session media.
+        if artifact is not None and store.version(chat_id) == version:
+            try:
+                artifact.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("Narrator cleanup failed chat_id=%s type=%s",
+                               chat_id, type(exc).__name__)

@@ -13,7 +13,7 @@ Upload a portrait photo in Telegram and the bot runs a five-stage pipeline:
 
 Everything happens inside Telegram. There is no web frontend.
 
-> **Current status:** Features 1–5 are implemented (Feature 5 phone test pending). The bot connects via long
+> **Current status:** Features 1–5 are merged and phone tested; Feature 6 is in progress (phone test pending). The bot connects via long
 > polling; `/start` and `/restart` greet, reset the chat, purge its temp media,
 > and ask for a photo. Send a portrait photo and the **Bouncer** — a Google ADK
 > `gemini-3.1-flash-lite` agent — confirms there's a human face, advancing the
@@ -28,14 +28,16 @@ Everything happens inside Telegram. There is no web frontend.
 > caption, advancing the chat to `SCRIPTING`. The **Scripter** then uses
 > `gemini-3.1-flash-lite` through Google ADK to write and send one affectionate
 > nature-documentary paragraph, at most 90 words. The delivered text is stored
-> for Feature 6 and the chat stops at `NARRATING`, without audio.
+> for the **Narrator**, a direct `gemini-3.1-flash-tts-preview` integration (not ADK).
+> It validates audio, produces an OGG/Opus voice message and advances to `DONE`
+> only after Telegram confirms delivery.
 > The generated avatar is written to the chat's temp dir (`avatar.png` or `avatar.jpg`, matching decoded format) and
 > deleted once sent; `/restart` purges it along with the portrait. If
 > generation or the photo send fails, the bot asks you to try again and leaves
 > the chat at `CONVERTING` so your next message retries. A photo sent
 > mid-interview gets a gentle redirect; a blank message re-asks the current
 > question; an unknown command nudges you to answer or `/restart`. The
-> remaining Narrator stage lands in Feature 6.
+> Narrator is the final pipeline step; `DONE` starts no further work.
 
 ## Quickstart
 
@@ -61,7 +63,22 @@ Everything happens inside Telegram. There is no web frontend.
    source .venv/bin/activate
    pip install -r requirements.txt
    ```
-   (Project dependencies are added as they land — see `SPECS/TECH.md` for the stack.)
+   Feature 6 also requires **FFmpeg with libopus and OGG support on PATH**, for
+   Telegram-playable voice output. Check before running (no installation):
+   ```bash
+   ffmpeg -version
+   ffmpeg -hide_banner -encoders
+   ffmpeg -hide_banner -muxers
+   ffmpeg -hide_banner -demuxers
+   ffmpeg -hide_banner -decoders
+   ```
+   Confirm `libopus` is an encoder, `ogg` is both a muxer and demuxer, and an
+   Opus decoder and `s16le` output muxer are available for final decode validation.
+   A build with libopus but no OGG muxer is insufficient.
+   If support is missing, arrange an approved installation for your Codio environment;
+   the bot does not install it. Missing codec support leaves narration retryable,
+   never sends a disguised WAV file. Run the full test gate to verify actual encoding
+   and decoding, not just the advertised capabilities.
 
 4. **Run the bot (long polling)**
    ```bash
@@ -93,7 +110,7 @@ The project contract lives in `SPECS/`:
 Never hard-code, commit, or log secrets. `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` are read from `.env` only; `.env.example` documents the required keys.
 
 ## Converter hardening (Feature 4)
-Conversion and scripting share one tracked per-chat background task. Telegram update
+Conversion, scripting and narration share one tracked per-chat background task. Telegram update
 handlers remain sequential. Both `/start` and `/restart` invalidate the old
 session before cancellation and purge its media; late results cannot initiate
 a photo send, advance the new session, or delete its files. A send already
@@ -128,5 +145,36 @@ Late results cannot initiate stale sends or overwrite the new session. An alread
 accepted Telegram message cannot be recalled, and a lost send acknowledgement
 can cause a duplicate on retry; delivery is not exactly-once.
 
-Feature 5 must pass the Codio phone checklist in
-`SPECS/2026-10-18-scripter/validation.md` before merge. No Narrator/TTS is implemented.
+Feature 5 passed Codio phone testing and PR #5 was merged at `0dec595`.
+
+## Narrator (Feature 6, in progress)
+
+The Narrator reads only stored `narration_text`, using the direct asynchronous
+Gemini SDK and `gemini-3.1-flash-tts-preview`, fixed Charon voice. No ADK agent,
+model fallback, script rewrite or automatic TTS retry loop. The Scripter hands off
+inside the same registered task; text/photo/non-reset commands at `NARRATING`
+retry only audio. Missing narration asks for `/restart` without calling Gemini.
+
+Validate declared PCM/WAV, wrap raw PCM as WAV in memory, encode using FFmpeg to
+OGG/Opus and validate the final audio before upload. Limits: 10 MiB per artifact,
+positive duration up to 120 seconds. Raw PCM metadata/alignment checks cannot prove
+that samples contain intelligible speech; voice quality is checked on the phone.
+Generation/preparation deadline is 120 seconds, codec work 15 seconds within that
+budget, and delivery/notifications 30 seconds each.
+
+The audio path is chat/session/attempt-specific with a truthful `.ogg` extension.
+Advance `NARRATING -> DONE` only after confirmed delivery and ownership/deadline
+checks. Failed generation, validation, filesystem work or delivery leaves the
+session unchanged and offers a later retry. Metadata-only logs never include
+narration, keys, raw exceptions, audio or encoder stderr.
+
+Both reset commands cancel the shared task, purge all chat media and clear stored
+narration. Shutdown also cancels narration. Late results cannot start stale sends,
+recreate old media or mutate replacement sessions. Generated audio is removed on
+completion/failure/cancellation. A Telegram send already accepted cannot be recalled;
+lost acknowledgements can duplicate an externally delivered voice on manual retry.
+
+Offline tests mock all Gemini and Telegram traffic; codec tests use local FFmpeg
+without network and must not be skipped in the final gates. See
+`SPECS/2026-10-18-narrator/plan.md` for acceptance tests and the Codio phone checklist.
+One Feature 6 PR, phone test before merge, no automated merge.

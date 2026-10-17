@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from app import orchestrator
+from app import audio_encoding, orchestrator
 from app.bouncer import Bouncer, LazyBouncer
 from app.config import Settings
 from app.conversion_tasks import ConversionTasks
@@ -24,7 +24,8 @@ from app.handlers import handle_restart, handle_start, handle_text
 from app.interviewer import Interviewer, LazyInterviewer
 from app.logging_config import FRIENDLY_ERROR
 from app.media import MEDIA_ROOT
-from app.orchestrator import SendPhotoFn
+from app.narrator import LazyNarrator, Narrator
+from app.orchestrator import EncodeAudioFn, SendPhotoFn, SendVoiceFn, ValidateAudioFn
 from app.photo_flow import DownloadFn, handle_photo_update
 from app.scripter import LazyScripter, Scripter
 from app.session_store import InMemorySessionStore
@@ -85,6 +86,23 @@ def make_send_photo(bot: Bot) -> SendPhotoFn:
     return send_photo
 
 
+async def safe_send_voice(bot: Bot, chat_id: int, path: Path) -> bool:
+    """Guard a voice upload without logging payloads or swallowing cancellation."""
+    try:
+        await bot.send_voice(chat_id=chat_id, voice=path)
+        return True
+    except Exception as exc:  # noqa: BLE001 - external failure stays retryable
+        logger.error("Failed to send voice chat_id=%s type=%s", chat_id, type(exc).__name__)
+        return False
+
+
+def make_send_voice(bot: Bot) -> SendVoiceFn:
+    """Build the typed voice delivery capability for the Narrator step."""
+    async def send_voice(chat_id: int, path: Path) -> bool:
+        return await safe_send_voice(bot, chat_id, path)
+    return send_voice
+
+
 async def dispatch(
     store: InMemorySessionStore,
     update: object,
@@ -94,6 +112,10 @@ async def dispatch(
     interviewer: Interviewer | None = None,
     converter: Converter | None = None,
     scripter: Scripter | None = None,
+    narrator: Narrator | None = None,
+    send_voice: SendVoiceFn | None = None,
+    encode_audio: EncodeAudioFn | None = None,
+    validate_audio: ValidateAudioFn | None = None,
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
     conversion_tasks: ConversionTasks | None = None,
@@ -106,7 +128,8 @@ async def dispatch(
     turn, the Converter step runs right after the acknowledgement. The
     ``ran_converter`` guard ensures the step runs at most once per turn.
     A configured Scripter continues in that same task after photo delivery;
-    updates at SCRIPTING retry only narration. NARRATING stops the pipeline.
+    updates at SCRIPTING retry scripting then narration. NARRATING retries only
+    audio; DONE stops the pipeline.
     """
     incoming = extract_chat_input(update)
     if incoming is None:
@@ -116,6 +139,18 @@ async def dispatch(
     chat_id = incoming.chat_id
     stage = store.get(chat_id).stage
     ran_converter = False
+
+    async def narrate(version: int) -> None:
+        assert narrator is not None
+
+        async def send_message(chat: int, text: str) -> bool:
+            return await safe_send_message(bot, chat, text)
+
+        await orchestrator.handle_narrating_update(
+            store, chat_id, narrator=narrator, send_voice=send_voice or make_send_voice(bot),
+            send_message=send_message, media_root=media_root, session_version=version,
+            encode_audio=encode_audio, validate_audio=validate_audio,
+        )
 
     async def script(version: int) -> None:
         assert scripter is not None
@@ -127,6 +162,10 @@ async def dispatch(
             store, chat_id, scripter=scripter, send_message=send_message,
             session_version=version,
         )
+        if (narrator is not None and store.version(chat_id) == version
+                and store.get(chat_id).stage is Stage.NARRATING):
+            # Same tracked worker: starting another would be rejected by dedup.
+            await narrate(version)
 
     async def convert_step(version: int) -> str | None:
         assert converter is not None and send_photo is not None
@@ -171,7 +210,15 @@ async def dispatch(
             conversion_tasks.start(chat_id, script)
         return None
     elif stage is Stage.NARRATING:
-        # Feature 6 is intentionally absent. Reset commands were handled above.
+        if narrator is None:
+            logger.warning("Update at NARRATING but no Narrator is configured")
+            return None
+        if conversion_tasks is None:
+            await narrate(store.version(chat_id))
+        else:
+            conversion_tasks.start(chat_id, narrate)
+        return None
+    elif stage is Stage.DONE:
         return None
     elif stage is Stage.CONVERTING:
         # Retry / self-heal: any update at CONVERTING re-runs the step.
@@ -239,6 +286,10 @@ async def dispatch_safely(
     interviewer: Interviewer | None = None,
     converter: Converter | None = None,
     scripter: Scripter | None = None,
+    narrator: Narrator | None = None,
+    send_voice: SendVoiceFn | None = None,
+    encode_audio: EncodeAudioFn | None = None,
+    validate_audio: ValidateAudioFn | None = None,
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
     conversion_tasks: ConversionTasks | None = None,
@@ -257,6 +308,10 @@ async def dispatch_safely(
             interviewer=interviewer,
             converter=converter,
             scripter=scripter,
+            narrator=narrator,
+            send_voice=send_voice,
+            encode_audio=encode_audio,
+            validate_audio=validate_audio,
             send_photo=send_photo,
             media_root=media_root,
             conversion_tasks=conversion_tasks,
@@ -293,6 +348,10 @@ def build_application(
 
     async def stop_conversions(application: Application) -> None:
         await conversion_tasks.close()
+        try:
+            await audio_encoding.drain_codec_cleanup()
+        except Exception as exc:  # noqa: BLE001 - cleanup errors log safe metadata only
+            logger.error("Codec cleanup incomplete type=%s", type(exc).__name__)
 
     application = (
         ApplicationBuilder()
@@ -304,6 +363,7 @@ def build_application(
     interviewer = LazyInterviewer(settings.require_gemini_key)
     converter = LazyConverter(settings.require_gemini_key)
     scripter = LazyScripter(settings.require_gemini_key)
+    narrator = LazyNarrator(settings.require_gemini_key)
 
     async def _handle(update: Update, context: CallbackContext) -> None:
         await dispatch_safely(
@@ -314,6 +374,8 @@ def build_application(
             interviewer=interviewer,
             converter=converter,
             scripter=scripter,
+            narrator=narrator,
+            send_voice=make_send_voice(context.bot),
             send_photo=make_send_photo(context.bot),
             media_root=MEDIA_ROOT,
             conversion_tasks=conversion_tasks,

@@ -1,4 +1,7 @@
 google-adk==2.11.0
+# Imported directly by app/narrator.py, not only through google-adk.
+# Same range google-adk 2.11.0 requires; validated against 2.31.0.
+google-genai>=2.19,<3
 mypy>=1.11
 pydantic>=2,<3
 pytest>=8

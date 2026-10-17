@@ -452,6 +452,9 @@ def routed_app(monkeypatch, store, root, bot, write):
         async def generate_avatar(self, path, summary):
             raise AssertionError("Conversion must not rerun at SCRIPTING")
 
+    # Keep this historical Feature 5 test isolated from the new Narrator stage.
+    # Feature 6 registered-handler tests supply and exercise their own Narrator.
+    monkeypatch.setattr(bot_module, "LazyNarrator", lambda key: None)
     monkeypatch.setattr(bot_module, "LazyScripter", StubScripter)
     monkeypatch.setattr(bot_module, "LazyConverter", UnusedConverter)
     monkeypatch.setattr(bot_module, "MEDIA_ROOT", root)
