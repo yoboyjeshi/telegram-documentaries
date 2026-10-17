@@ -77,7 +77,7 @@ No web frontend, no webhook server, no database (in-memory per-chat state plus t
 - `SessionState.narration_text: str | None` is cleared by both reset commands.
 - `handle_scripting_update` generates, validates and sends, then stores the exact
   delivered text and advances `SCRIPTING -> NARRATING` without an intervening
-  await. No audio or automatic work at `NARRATING`.
+  await. Feature 6 now continues from `NARRATING` in the same task.
 - Generation deadline 120s; narration and notification sends 30s. Missing summary
   prompts `/restart`. Other failures offer a later update retry, leave the session
   unchanged, and log metadata only. A failed retry notification is not retried.
@@ -88,3 +88,44 @@ No web frontend, no webhook server, no database (in-memory per-chat state plus t
   cancellation; shutdown uses the existing hook. Already-accepted Telegram messages
   cannot be recalled, and lost acknowledgements do not permit exactly-once delivery.
 - Existing earlier-stage logging/privacy cleanup remains Feature 7, not part of this PR.
+
+
+## Feature 6: Narrator integration (in progress)
+
+- Feature 5 was phone-tested and merged via PR #5 at `0dec595`; its 439-test baseline
+  is preserved. Feature 6 remains pending Codio phone testing and user merge.
+- `app/narrator.py`: direct async Google Gen AI SDK, NOT an ADK agent; exact
+  `gemini-3.1-flash-tts-preview`, single Charon voice, stored narration only.
+  Lazy credentials via Settings; one request attempt, no model fallback.
+- Strict Pydantic audio bytes/MIME boundary. `app/audio_format.py` accepts the
+  documented 24 kHz mono signed 16-bit little-endian PCM or matching PCM WAV;
+  reject unsupported/MIME-mismatched/malformed/empty/oversized data. Raw PCM has no
+  self-identifying header; its structural checks do not establish speech content.
+- FFmpeg with libopus encoding, OGG mux/demux and Opus decoding is required on PATH.
+  WAV stays in memory;
+  `app/audio_encoding.py` uses bounded pipes (no shell/network input), encodes
+  OGG/Opus and validates its container and complete bounded decode before delivery.
+  Byte cap 10 MiB; duration >0 and <=120 seconds. Missing encoder is safely retryable.
+- `handle_narrating_update` has a 120-second preparation deadline, 15-second codec
+  sub-limit and 30-second send/notification limits. Expired deadlines fail even if
+  a dependency suppresses cancellation. Encoder subprocesses are terminated/reaped.
+- `safe_send_voice` mirrors safe_send_photo. A verified `.ogg` is written under
+  the chat directory with session-version and random attempt ID in its name.
+  Confirmed Telegram delivery plus post-await stage/version/cancellation checks
+  precede the only state mutation, `NARRATING -> DONE`. No extra completion send.
+- Scripter handoff stays in the same ConversionTasks worker; NARRATING retries
+  start only Narrator. DONE returns before model work, media downloads or new tasks.
+  /start and /restart retain priority, invalidate ownership, cancel, clear state,
+  purge the whole chat directory and return to AWAITING_PHOTO. Existing post_stop
+  cancellation covers Narrator, then drains owned codec cleanup. A failed drain
+  logs only exception type, never claims that every child exited. No new pipeline
+  registry or concurrent update handling.
+- New errors log operation/chat/stage/type only, with no traceback, raw exception,
+  narration, credentials, audio or subprocess stderr. One bounded friendly retry
+  notification. Missing narration asks for /restart without a TTS request.
+- Remove generated audio on every outcome, but never delete replacement-session
+  files. Cleanup failure does not roll back confirmed DONE. Already-accepted sends
+  cannot be recalled; lost acknowledgements do not provide exactly-once delivery.
+- All Gemini/Telegram calls are mocked in tests, including actual registered-handler
+  routing and races. Mandatory real local codec tests need FFmpeg but no network.
+  README documents setup. MISSION.md and broader Feature 7 work remain untouched.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -33,3 +34,8 @@ def purge_chat_media(chat_id: int, root: Path | None = None) -> None:
     chat_dir = chat_media_dir(chat_id, root=root)
     if chat_dir.exists():
         shutil.rmtree(chat_dir)
+
+
+def narration_dest(chat_id: int, version: int, root: Path | None = None) -> Path:
+    """A server-generated attempt path: old cleanup can never target a new voice."""
+    return chat_media_dir(chat_id, root=root) / f"narration-{version}-{uuid.uuid4().hex}.ogg"

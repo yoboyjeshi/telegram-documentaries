@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic.config import JsonDict
 
 from app.config import ConfigurationError, ensure_google_api_key
 from app.states import TraitSummary
@@ -172,6 +173,16 @@ def validate_narration(value: str) -> str:
     return text
 
 
+def _gemini_output_schema(schema: JsonDict) -> None:
+    """Omit an unsupported Gemini wire keyword, not local extra-field validation.
+
+    The Developer API responseSchema subset rejects additionalProperties, which
+    google-genai 2.31 serializes as additional_properties. Pydantic still enforces
+    extra="forbid" when parsing the response; only the exported schema differs.
+    """
+    schema.pop("additionalProperties", None)
+
+
 class NarrationScript(BaseModel):
     """One validated documentary paragraph (the Scripter's only output).
 
@@ -181,7 +192,12 @@ class NarrationScript(BaseModel):
     passed back through ``model_validate``.
     """
 
-    model_config = ConfigDict(strict=True, extra="forbid", revalidate_instances="always")
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        revalidate_instances="always",
+        json_schema_extra=_gemini_output_schema,
+    )
 
     text: str
 

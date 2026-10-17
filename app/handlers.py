@@ -143,3 +143,12 @@ SCRIPTER_FAILURE_TEXT = (
 SCRIPTER_MISSING_SUMMARY_TEXT = (
     "I seem to have lost your interview notes. Send /restart and we'll begin again."
 )
+
+
+NARRATOR_FAILURE_TEXT = (
+    "My narrator is having a moment. Send a text message to try again, "
+    "or /restart to start over."
+)
+NARRATOR_MISSING_TEXT = (
+    "I seem to have lost your narration. Send /restart and we'll begin again."
+)
