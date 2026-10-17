@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from app.bouncer import (
     AdkBouncer,
     BouncerVerdict,
     LazyBouncer,
+    _ensure_google_api_key,
     refusal_text,
 )
 from app.config import ConfigurationError
@@ -48,10 +51,42 @@ def test_adkbouncer_requires_a_key() -> None:
         AdkBouncer("")
 
 
-def test_adkbouncer_never_logs_the_key(caplog) -> None:
+def test_adkbouncer_never_logs_the_key(tmp_path: Path, caplog) -> None:
     secret = "SUPER_SECRET_GEMINI_KEY"
-    AdkBouncer(secret)
+
+    async def failing_runner(image_path: Path) -> BouncerVerdict:
+        logging.getLogger("telegram_documentaries").error(
+            "Bouncer runner failed for %s", image_path.name
+        )
+        raise RuntimeError("gemini down")
+
+    bouncer = AdkBouncer(secret, runner=failing_runner)
+    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError):
+        asyncio.run(bouncer.inspect(tmp_path / "photo.jpg"))
+
+    assert "Bouncer runner failed" in caplog.text  # a real logging path ran
     assert secret not in caplog.text
+
+
+def test_google_api_key_is_set_when_absent(monkeypatch, caplog) -> None:
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with caplog.at_level(logging.WARNING):
+        _ensure_google_api_key("SUPPLIED_BOUNCER_KEY")
+    assert os.environ["GOOGLE_API_KEY"] == "SUPPLIED_BOUNCER_KEY"
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_existing_google_api_key_is_kept_and_warned_about(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "PRESET_ENV_KEY")
+    with caplog.at_level(logging.WARNING):
+        _ensure_google_api_key("SUPPLIED_BOUNCER_KEY")
+    # The pre-existing env value wins; the anomaly is logged without any key value.
+    assert os.environ["GOOGLE_API_KEY"] == "PRESET_ENV_KEY"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert any("GOOGLE_API_KEY" in r.getMessage() for r in warnings)
+    assert "SUPPLIED_BOUNCER_KEY" not in caplog.text
+    assert "PRESET_ENV_KEY" not in caplog.text
 
 
 def test_adkbouncer_delegates_to_injected_runner(tmp_path: Path) -> None:

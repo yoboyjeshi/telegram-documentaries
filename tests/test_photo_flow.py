@@ -18,6 +18,10 @@ from app.session_store import InMemorySessionStore
 from app.states import Stage
 from app.telegram_adapter import ChatInput
 
+# A long, unlikely-to-collide sentinel for the fake image bytes, so the
+# "image bytes never reach the log" assertions cannot pass by coincidence.
+IMAGE_SENTINEL = "IMG_BYTES_SENTINEL_9f3a"
+
 
 def _photo(chat_id: int = 1, file_id: str | None = "fid") -> ChatInput:
     return ChatInput(chat_id=chat_id, kind="photo", file_id=file_id)
@@ -39,7 +43,7 @@ class FakeBouncer:
 
 async def _ok_download(file_id: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"img")
+    dest.write_bytes(IMAGE_SENTINEL.encode())
     return dest
 
 
@@ -157,4 +161,38 @@ def test_flow_logs_verdict_not_image_bytes(tmp_path: Path, caplog) -> None:
         )
 
     assert "is_human=True" in caplog.text
-    assert "img" not in caplog.text
+    assert IMAGE_SENTINEL not in caplog.text
+
+
+def test_bouncer_failure_logs_no_image_bytes(tmp_path: Path, caplog) -> None:
+    """A bouncer error whose cause embeds the payload must not leak image bytes."""
+
+    class PayloadError(Exception):
+        pass
+
+    class PayloadBouncer:
+        async def inspect(self, image_path: Path) -> BouncerVerdict:
+            raise RuntimeError("gemini timeout") from PayloadError(image_path.read_bytes())
+
+    store = _awaiting()
+
+    with caplog.at_level(logging.ERROR):
+        reply = asyncio.run(
+            handle_photo_update(
+                store,
+                _photo(),
+                bouncer=PayloadBouncer(),
+                download=_ok_download,
+                media_root=tmp_path,
+            )
+        )
+
+    assert reply == BOUNCER_FAILURE_TEXT  # friendly retry behaviour unchanged
+    assert store.get(1).stage is Stage.AWAITING_PHOTO
+    # Fail loud in logs: the failure is observable, without the payload.
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert errors
+    assert any(
+        "RuntimeError" in r.getMessage() and "gemini timeout" in r.getMessage() for r in errors
+    )
+    assert IMAGE_SENTINEL not in caplog.text

@@ -61,6 +61,16 @@ def test_chat_id_is_normalised_to_int() -> None:
     assert isinstance(parsed.chat_id, int)
 
 
+def test_unusable_chat_id_returns_none_and_logs_debug_detail(caplog) -> None:
+    update = _update("hi", chat_id=SimpleNamespace())  # int() raises TypeError
+    with caplog.at_level(logging.DEBUG):
+        parsed = extract_chat_input(update)
+    assert parsed is None
+    debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert debug_records
+    assert any(r.exc_info is not None for r in debug_records)
+
+
 def _photo_update(photo: object, chat_id: object = 123) -> SimpleNamespace:
     message = SimpleNamespace(text=None, photo=photo, chat=SimpleNamespace(id=chat_id))
     return SimpleNamespace(effective_message=message, message=message)
@@ -86,6 +96,26 @@ def test_photo_without_file_id_is_other_kind() -> None:
     parsed = extract_chat_input(_photo_update([SimpleNamespace(file_id=None, file_size=1)]))
     assert parsed is not None
     assert parsed.kind == "other"
+
+
+def test_photo_with_no_sizes_is_other_kind() -> None:
+    parsed = extract_chat_input(_photo_update(()))
+    assert parsed is not None
+    assert parsed.kind == "other"
+
+
+def test_photo_with_all_sizes_none_falls_back_to_last_and_logs(caplog) -> None:
+    first = SimpleNamespace(file_id="first", file_size=None)
+    last = SimpleNamespace(file_id="last", file_size=None)
+    with caplog.at_level(logging.WARNING):
+        parsed = extract_chat_input(_photo_update([first, last]))
+    assert parsed is not None
+    assert parsed.kind == "photo"
+    assert parsed.file_id == "last"
+    # The fallback must be observable, not silently swallowed.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert any("chat_id=123" in r.getMessage() for r in warnings)
 
 
 def test_photo_adapter_does_not_download() -> None:

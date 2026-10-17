@@ -59,6 +59,20 @@ class BouncerVerdict(BaseModel):
     reason: str | None = None
 
 
+def _ensure_google_api_key(api_key: str) -> None:
+    """Expose the key to the ADK/Gemini clients without ever logging its value.
+
+    A pre-existing ``GOOGLE_API_KEY`` wins (``setdefault`` semantics); warn so a
+    misconfiguration is observable rather than silently masked.
+    """
+    if os.environ.get("GOOGLE_API_KEY"):
+        logger.warning(
+            "GOOGLE_API_KEY is already set in the environment; "
+            "the existing value takes precedence over the supplied Bouncer key."
+        )
+    os.environ.setdefault("GOOGLE_API_KEY", api_key)
+
+
 class Bouncer(Protocol):
     """Anything that can inspect an image and return a :class:`BouncerVerdict`."""
 
@@ -97,7 +111,7 @@ class AdkBouncer:
 
     async def _inspect_with_adk(self, image_path: Path) -> BouncerVerdict:
         # Lazy imports: the rest of the app imports without ADK/a model/a key.
-        os.environ.setdefault("GOOGLE_API_KEY", self._api_key)
+        _ensure_google_api_key(self._api_key)
         from google.adk.agents import LlmAgent
         from google.adk.runners import InMemoryRunner
         from google.genai import types

@@ -58,8 +58,10 @@ async def handle_photo_update(
 
     try:
         verdict = await bouncer.inspect(dest)
-    except Exception:
-        logger.exception("Bouncer failed chat_id=%s", chat_id)
+    except Exception as exc:  # noqa: BLE001 - any bouncer error must be handled, not crash
+        # Log type + message only: a full traceback can embed the request
+        # payload (image bytes) from the ADK/Gemini client.
+        logger.error("Bouncer failed chat_id=%s: %s: %s", chat_id, type(exc).__name__, exc)
         store.set_stage(chat_id, Stage.AWAITING_PHOTO)
         return BOUNCER_FAILURE_TEXT
 

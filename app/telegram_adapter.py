@@ -36,6 +36,7 @@ def extract_chat_input(update: object) -> ChatInput | None:
     try:
         chat_id = int(chat.id)
     except (AttributeError, TypeError, ValueError):
+        logger.debug("Unusable chat id (int() failed); ignoring update", exc_info=True)
         return None
 
     text = getattr(message, "text", None)
@@ -50,6 +51,11 @@ def extract_chat_input(update: object) -> ChatInput | None:
         try:
             largest = max(photo, key=lambda p: getattr(p, "file_size", 0))
         except (TypeError, ValueError):
+            logger.warning(
+                "Photo sizes not comparable (missing file_size?); using last photo chat_id=%s",
+                chat_id,
+                exc_info=True,
+            )
             largest = photo[-1] if photo else None
         if largest is not None:
             file_id = getattr(largest, "file_id", None)
