@@ -6,24 +6,26 @@ Verification date: **2026-10-17 (automated gates)**. Branch: `feature/2026-10-17
 Status: **spec approved (2026-10-17) — implemented; automated gates green; manual phone test pending.**
 
 ## 1. Automated gates
-- [x] `scripts/test` passes (all unit tests green, **no network**). — observed count: **151**.
+- [x] `scripts/test` passes (all unit tests green, **no network**). — observed count: **152**.
 - [x] `scripts/hooks` passes (`ruff` clean, `mypy` clean).
 - [x] Tests were written first (Red) and cover, at minimum:
   - [x] Shared key helper: sets when absent; keeps+warns on a *different* pre-existing value; no warning when identical; never logs a key. (`tests/test_config.py`)
   - [x] `InterviewState`/`InterviewAnswer`/`TraitSummary` schemas; `record` pairs the pending question and **fails loud** with no pending question. (`tests/test_states.py`)
   - [x] `reset` clears interview state (stage back to `GREETING`). (`tests/test_session_store.py`)
-  - [x] `INTERVIEWER_MODEL == "gemini-3.1-flash-lite"`; `TOTAL_QUESTIONS == 6` and within 5–7; `AdkInterviewer` raises without a key, never logs it, delegates to injected runners; `LazyInterviewer` builds once. (`tests/test_interviewer.py`)
+  - [x] `INTERVIEWER_MODEL == "gemini-3.1-flash-lite"`; `TOTAL_QUESTIONS == 6` and within 5–7; `AdkInterviewer` raises without a key and never logs it — the key-hygiene test drives the **real `_run_adk` path** offline (only `ensure_google_api_key` is monkeypatched to raise) and asserts the key value never reaches the log; delegates to injected runners; `LazyInterviewer` builds once and is key-free at construction. (`tests/test_interviewer.py`)
   - [x] Pure texts + `apply_bouncer_verdict` (human → `None` + `INTERVIEW`; non-human → refusal). (`tests/test_handlers.py`)
   - [x] Progression 1..N advancing one step per answer; answers collected as Q/A pairs. (`tests/test_orchestrator.py`)
   - [x] Summary assembly stores the `TraitSummary` and advances `INTERVIEW -> CONVERTING` with `INTERVIEW_COMPLETE_TEXT`. (`tests/test_orchestrator.py`)
-  - [x] Blank/whitespace answer re-asks, does not record/advance. (`tests/test_orchestrator.py`)
+  - [x] Blank/whitespace answer re-asks, does not record/advance — covers space, tab, and newline variants (parametrised). (`tests/test_orchestrator.py`)
   - [x] Unknown command mid-interview → `INTERVIEW_UNKNOWN_COMMAND_TEXT` nudge, records nothing, stays on the current question. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [x] Unknown commands reach the handler through PTB's **real handler registry** (catch-all registered last, `/start`/`/restart` still matched first). (`tests/test_bot.py`)
-  - [x] Other update kinds (sticker/document) mid-interview → `INTERVIEW_OTHER_REDIRECT_TEXT`, no state change, reachable via `bot.dispatch`. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
+  - [x] Other update kinds (sticker/document) mid-interview → `INTERVIEW_OTHER_REDIRECT_TEXT`, no state change. **Defensive default only**: `bot.dispatch` routes `other` kinds to the orchestrator, but **no PTB handler matches sticker/document updates in the current registry**, so the unit tests call `dispatch` directly rather than going through real Telegram. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [x] Photo mid-interview → gentle redirect, stage + pending question unchanged. (`tests/test_orchestrator.py`, `tests/test_bot.py`)
   - [x] Interviewer failure (`next_question` / `summarise` raises) → friendly retry, state unchanged, no raise. (`tests/test_orchestrator.py`)
   - [x] Human verdict starts the interview (intro + Q1). (`tests/test_photo_flow.py`)
-  - [x] Bot routing: INTERVIEW text → orchestrator; INTERVIEW photo → redirect; INTERVIEW unknown command → nudge. (`tests/test_bot.py`)
+  - [x] Bot routing: INTERVIEW text → orchestrator; INTERVIEW photo → redirect; INTERVIEW unknown command → nudge; INTERVIEW `other` kind → redirect. (`tests/test_bot.py`)
+  - [x] Kind-branching: a command gets the unknown-command nudge while a sticker/document-style update gets the distinct other-kind redirect. (`tests/test_orchestrator.py`)
+  - [x] `/restart` mid-interview resets to `AWAITING_PHOTO` and clears the interview state. (`tests/test_bot.py`)
   - [x] Logging hygiene: no `GEMINI_API_KEY` (verified on the real `_run_adk` path), no raw answers (including `ValidationError` payloads), no summary text, no image bytes. (`tests/test_interviewer.py`, `tests/test_orchestrator.py`)
   - [x] Commit-only-on-success: after a failed `next_question`, a retry records exactly one answer against the single unchanged pending question. (`tests/test_orchestrator.py`)
 
@@ -70,8 +72,8 @@ With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, th
 - [ ] `SPECS/MISSION.md` principle #1 wording reconciled **only if the user approves**. (No change made; awaiting approval.)
 
 ## 8. Merge criteria
-- [x] All automated gates green (`scripts/test`, `scripts/hooks`).
+- [ ] All automated gates green (`scripts/test`, `scripts/hooks`).
 - [ ] Manual phone test passed (interview completes in 6 questions; photo-mid-interview redirected; reset clears state; no crash).
-- [x] Scope guards hold; no secrets committed.
+- [ ] Scope guards hold; no secrets committed.
 - [ ] Code review raised no blocking findings.
 - [ ] PR opened against `main` (not merged by the build agent).

@@ -99,32 +99,49 @@ scripts/
 - Keep it simple and general; no config toggles, menus, or speculative abstractions.
 
 ## Implementation deviations
-_(Filled in during implementation/validation.)_
 
 - **TG4 + TG5 + TG6 gates run together.** Changing `apply_bouncer_verdict` to
   return `str | None` made `mypy` fail on `app/photo_flow.py` (the sole caller),
   so the `photo_flow` consumer change (TG6) had to land with TG4/TG5 to keep
   `scripts/hooks` green. The intended work of all three groups was implemented;
   only the gate-run points were merged. No behavioural deviation.
+- **Deliberate Feature 2 surface changes (per the approved spec).**
+  `INTERVIEW_READY_TEXT` was removed (the entry reply now asks question 1), and
+  `apply_bouncer_verdict` returns `None` for a human verdict (the caller starts
+  the interview) and the refusal text otherwise. The Feature 2 test
+  `test_interview_ready_text_asks_no_question` was deleted and the verdict tests
+  updated.
+- **Shared Google-key helper extracted.** `_ensure_google_api_key` moved from
+  `app/bouncer.py` to a public `ensure_google_api_key` in `app/config.py`, now
+  used by both the Bouncer and the Interviewer. The two Feature 2 key tests were
+  retargeted to the shared helper; no shim was left behind in `bouncer`.
 - **`start_interview` failure path.** The spec describes entry as "asks Q1,
   replies with `INTERVIEW_INTRO` + Q1" but does not state what to do if that very
   first Gemini call fails. Chosen behaviour (consistent with the self-heal and
   commit-only-on-success rules): return `INTERVIEW_FAILURE_TEXT`, leave a fresh
   `InterviewState` with no pending question, and let the next text self-heal by
   asking Q1 again. Covered by a test.
+- **Commit-only-on-success.** An answer is recorded only *after* the model call
+  succeeds. A failed `next_question`/`summarise` leaves the interview exactly as
+  it was (same single pending question, no recorded answer), so a retry records
+  exactly once against the unchanged question. Covered by a re-entrancy test.
 - **`record(answer)` records the answer verbatim.** Blank/whitespace text is
   rejected before `record` is called; non-blank answers are stored as received.
 - **`handle_interview_update` branches by kind.** Commands get
   `INTERVIEW_UNKNOWN_COMMAND_TEXT`; any other non-text/non-photo kind (sticker,
   document, unsupported media) gets the new `INTERVIEW_OTHER_REDIRECT_TEXT`.
-  `bot.dispatch` now routes `other`-kind updates at `INTERVIEW` to the
-  orchestrator so that redirect is reachable; `/start` and `/restart` remain
-  handled earlier in `bot.dispatch`. (Code-review fix.)
-- **Bot registry catch-all (code-review fix).** `build_application` registers
-  `MessageHandler(filters.COMMAND, _handle)` **last**, so unknown commands
-  (`/foo`) reach `dispatch` → orchestrator. Previously PTB dropped them, making
-  the mid-interview nudge unreachable from real Telegram. `/start` and
-  `/restart` keep their dedicated `CommandHandler`s and are still matched first.
+  `bot.dispatch` routes `other`-kind updates at `INTERVIEW` to the orchestrator,
+  but **no PTB handler matches sticker/document updates in the current handler
+  registry**, so that branch is a **defensive default only** -- exercised by unit
+  tests that call `dispatch` directly, not reachable from real Telegram today.
+  (It would become reachable if a later feature registered such a handler.)
+- **Bot registry catch-all (code-review fix; blocking finding).**
+  `build_application` registers `MessageHandler(filters.COMMAND, _handle)`
+  **last**, so unknown commands (`/foo`) reach `dispatch` -> orchestrator.
+  Previously PTB dropped them, making the mid-interview nudge unreachable from
+  real Telegram. `/start` and `/restart` keep their dedicated `CommandHandler`s
+  and are still matched first. Covered by tests that drive PTB's real handler
+  registry.
 - **Validation-failure logging (code-review fix).** `_log_interviewer_failure`
   logs a `pydantic.ValidationError` as its type alone, because its message
   embeds `input_value` (the raw model output, which can carry answer/summary
