@@ -2,8 +2,9 @@
 
 ## Status
 
-Implementation and final automated verification are complete. Codio phone testing,
-publication and merge are pending.
+Implementation passed the initial Windows automated gates. The first Codio run
+exposed a Python 3.11 cancellation defect, documented below with its correction.
+Native Codio re-verification, phone testing, publication and merge are pending.
 No live Gemini or Telegram result is claimed.
 
 Baseline: merged main `0dec5956c42201538d8c6adb1fa3ef5762d96fe7`.
@@ -127,3 +128,46 @@ The executable stayed outside the repository, in the review workspace. PATH was
 changed only for the test subprocess, never permanently. No system installation.
 This final run supersedes every pending or failed codec gate described above.
 No live model/Telegram call or Codio phone-test result is claimed.
+
+
+## Codio compatibility failure (2026-10-18)
+
+The first Codio run on Python 3.11.2 completed 787 tests successfully and failed
+`test_repeated_cancellation_still_reaps_and_never_hangs`: the encoder call had
+returned cancellation before the process received kill. The real codec gates
+passed. This supersedes any implication that the earlier Windows-only green
+run proved Codio compatibility.
+
+The lead independently reproduced the identical assertion failure by replaying
+only the reviewed `wait_for`, `_cancel_and_wait` and `_release_waiter` functions
+from CPython v3.11.2 on the existing Python 3.13 interpreter. The source was
+fetched from the CPython repository, not added to application code. Python 3.11
+`wait_for` creates a child task and a second cancellation can interrupt its wait
+for that child without waiting for the child cleanup. Python 3.12+ uses a
+same-task timeout implementation for positive timeouts.
+
+This reproduction is compatibility-semantic evidence, not a native Python 3.11
+or Linux run. The corrected branch still requires Codio tests and hooks, followed
+by user phone acceptance. No tests may be skipped or weakened.
+
+
+### Correction and final local gates
+
+Replaced the three codec timeout wrappers with Python 3.11-supported
+`asyncio.timeout` contexts. Codec work and its cleanup now remain in the same
+caller task. No cleanup assertion was relaxed: all 44 previously delivered
+codec test bodies are AST-identical. Added two regression cases covering encode
+and validate with a simulation of the old child-task cancellation behavior.
+
+The unchanged repository scripts on Windows Python 3.13.12 passed after this fix:
+- `scripts/test -q`: **790 passed in 10.41s**, zero skips, all real codec gates.
+- `scripts/hooks`: Ruff clean, mypy clean on 21 source files.
+
+Original 285 baseline test function bodies remain unchanged. MISSION.md, gate
+scripts and configuration remain byte-identical; .env remains absent and ignored.
+
+
+The full suite also passed with the exact upstream Python 3.11.2 wait_for
+functions replayed: **790 passed in 13.98s**, including real FFmpeg. This remains
+a semantic replay on Python 3.13, not a native Codio result.
+

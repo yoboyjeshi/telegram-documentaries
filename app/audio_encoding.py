@@ -10,6 +10,12 @@ bytes that will actually be delivered belongs to the caller, which runs
 :func:`validate_voice` once on the artifact it holds, so a single subdeadline
 covers encode plus that final check without validating the same bytes twice.
 
+Deadlines use :func:`asyncio.timeout` rather than :func:`asyncio.wait_for`, so
+the whole codec body -- including the reap in its ``finally`` -- runs in the
+caller's own task. Before Python 3.12 ``wait_for`` ran the body in a child task,
+and a second cancellation returned to the caller while that child was still
+mid-escalation, letting a cancelled call return before the child was killed.
+
 Every spawn is terminated and reaped on success, failure, timeout and
 cancellation, including a cancellation that arrives while an earlier
 cancellation is still being cleaned up. A child that survives both grace
@@ -178,7 +184,8 @@ async def encode_voice(wav_data: bytes, *, spawn: SpawnFn | None = None) -> byte
     the single authoritative check and avoids validating twice.
     """
     try:
-        return await asyncio.wait_for(_encode(wav_data, spawn), ENCODING_TIMEOUT_SECONDS)
+        async with asyncio.timeout(ENCODING_TIMEOUT_SECONDS):
+            return await _encode(wav_data, spawn)
     except TimeoutError:
         raise AudioEncodingError("Audio encoding timed out") from None
 
@@ -192,7 +199,8 @@ async def validate_voice(data: bytes, *, spawn: SpawnFn | None = None) -> None:
     encoder.
     """
     try:
-        await asyncio.wait_for(_validate(data, spawn, ENCODING_TIMEOUT_SECONDS), ENCODING_TIMEOUT_SECONDS)
+        async with asyncio.timeout(ENCODING_TIMEOUT_SECONDS):
+            await _validate(data, spawn, ENCODING_TIMEOUT_SECONDS)
     except TimeoutError:
         raise AudioEncodingError("Audio validation timed out") from None
 
@@ -343,7 +351,8 @@ async def _run_codec(
 ) -> bytes:
     process = await _spawn_owned(spawn or _spawn_ffmpeg, args)
     try:
-        return await asyncio.wait_for(_exchange(process, payload, max_output), timeout)
+        async with asyncio.timeout(timeout):
+            return await _exchange(process, payload, max_output)
     except (AudioEncodingError, asyncio.CancelledError):
         raise
     except TimeoutError:

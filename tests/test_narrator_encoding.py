@@ -22,7 +22,7 @@ import math
 import re
 import struct
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from shutil import which
 
 import pytest
@@ -725,6 +725,73 @@ async def test_repeated_cancellation_still_reaps_and_never_hangs(
     await drain_codec_cleanup(1)
     assert process.returncode is not None
     assert pending_codec_cleanup() == 0
+
+
+async def _child_task_cancellation_shape(fut: object, _timeout: float) -> object:
+    """Simulate only the *cancellation shape* of CPython 3.11's ``asyncio.wait_for``.
+
+    It runs the body in a child task and, on cancellation, awaits that child
+    through a helper that a second cancellation interrupts -- which is the bit
+    that let a cancelled call return while the child was still escalating.
+
+    This is deliberately not a full ``wait_for``: ``_timeout`` is ignored and no
+    deadline is enforced, so it is only valid for tests that cancel explicitly.
+    """
+    loop = asyncio.get_running_loop()
+    child = asyncio.ensure_future(fut)
+    waiter = loop.create_future()
+
+    def release(_task: object) -> None:
+        if not waiter.done():
+            waiter.set_result(None)
+
+    child.add_done_callback(release)
+    try:
+        await waiter
+    except asyncio.CancelledError:
+        if child.done():
+            return child.result()
+        child.remove_done_callback(release)
+        child.cancel()
+        settled = loop.create_future()
+        child.add_done_callback(lambda _t: settled.done() or settled.set_result(None))
+        await settled
+        raise
+    return child.result()
+
+
+CANCELLABLE_CALLS: list[tuple[str, Callable[[object], Awaitable[object]]]] = [
+    ("encode_voice", lambda spawn: encode_voice(make_wav(), spawn=spawn)),  # type: ignore[arg-type]
+    ("validate_voice", lambda spawn: validate_voice(make_ogg(), spawn=spawn)),  # type: ignore[arg-type]
+]
+
+
+@pytest.mark.parametrize(("name", "call"), CANCELLABLE_CALLS,
+                         ids=[n for n, _ in CANCELLABLE_CALLS])
+@asyncio_test
+async def test_cleanup_stays_in_the_callers_task_under_the_3_11_cancellation_shape(
+    name: str,
+    call: Callable[[object], Awaitable[object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: a cancelled call must not return before the child is stopped."""
+    watchdog = asyncio.wait_for  # the real one, captured before the patch
+    monkeypatch.setattr(asyncio, "wait_for", _child_task_cancellation_shape)
+    monkeypatch.setattr(audio_encoding, "TERMINATE_GRACE_SECONDS", 0.05)
+    reader = EndlessReader()
+    process = FakeProcess(stdout=reader, hang=True, ignore_terminate=True, cancel_wait=2)
+    task = asyncio.ensure_future(call(Spawner(process)))
+    await reader.reading.wait()
+    task.cancel()
+    await process.signalled.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await watchdog(task, 5)  # a regression must fail, never hang
+    assert process.terminated >= 1, name
+    assert process.killed >= 1, name
+    assert process.returncode is not None, name
+    assert pending_codec_cleanup() == 0, name
+    assert asyncio.all_tasks() == {asyncio.current_task()}  # no abandoned child task
 
 
 @asyncio_test
