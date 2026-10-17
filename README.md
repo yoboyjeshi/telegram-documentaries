@@ -13,7 +13,7 @@ Upload a portrait photo in Telegram and the bot runs a five-stage pipeline:
 
 Everything happens inside Telegram. There is no web frontend.
 
-> **Current status:** Features 1–3 are implemented. The bot connects via long
+> **Current status:** Features 1–4 are implemented. The bot connects via long
 > polling; `/start` and `/restart` greet, reset the chat, purge its temp media,
 > and ask for a photo. Send a portrait photo and the **Bouncer** — a Google ADK
 > `gemini-3.1-flash-lite` agent — confirms there's a human face, advancing the
@@ -21,11 +21,18 @@ Everything happens inside Telegram. There is no web frontend.
 > can try again. When the Bouncer accepts you, the **Interviewer** (also a
 > `gemini-3.1-flash-lite` ADK agent) asks **6 questions** one at a time about
 > your quirks, habits, and personality, remembers your answers per chat, then
-> synthesises a typed trait summary and hands the chat to the converting stage
-> (nothing happens after that yet). A photo sent mid-interview gets a gentle
-> redirect; a blank message re-asks the current question; an unknown command
-> nudges you to answer or `/restart`. The remaining stages above (Converter,
-> Scripter, Narrator) land in later features.
+> synthesises a typed trait summary and hands the chat to the converting stage.
+> The **Converter** (`gemini-3.1-flash-image`, a Google ADK agent) then
+> reimagines your original portrait as a hybrid-animal avatar matching those
+> traits and sends it back as a Telegram photo with a one-line documentary
+> caption, advancing the chat to `SCRIPTING` — nothing happens after that yet.
+> The generated avatar is written to the chat's temp dir (`avatar.png`) and
+> deleted once sent; `/restart` purges it along with the portrait. If
+> generation or the photo send fails, the bot asks you to try again and leaves
+> the chat at `CONVERTING` so your next message retries. A photo sent
+> mid-interview gets a gentle redirect; a blank message re-asks the current
+> question; an unknown command nudges you to answer or `/restart`. The
+> remaining stages above (Scripter, Narrator) land in later features.
 
 ## Quickstart
 
