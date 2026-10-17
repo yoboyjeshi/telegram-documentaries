@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from telegram import Bot, Update, User
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, MessageHandler
+from telegram.ext import Application, BaseHandler, CommandHandler, MessageHandler
 
 from app import bot as bot_module
 from app.bot import (
@@ -349,15 +350,21 @@ def _registry_application() -> tuple[Application, Bot]:
     ``Bot.get_me()`` during ``initialize()``; that would be a network call here.
     """
     application = build_application(Settings(telegram_bot_token="123:ABC"))
+    # Private-API shim: PTB only sets ``_bot_user`` from ``get_me()`` during
+    # ``initialize()`` (a network call), so we inject an offline identity to
+    # build a real ``Application``/``Update`` pair here. Revisit on a PTB major
+    # bump if this private attribute is renamed or made read-only.
     application.bot._bot_user = User(  # type: ignore[assignment]
         id=1, first_name="TestBot", is_bot=True, username="testbot"
     )
     return application, application.bot
 
 
-def _first_matching_handler(handlers: object, update: Update) -> object:
+def _first_matching_handler(
+    handlers: Sequence[BaseHandler], update: Update
+) -> BaseHandler | None:
     """Return the handler PTB would run for ``update`` (registry order wins)."""
-    for handler in handlers:  # type: ignore[union-attr]
+    for handler in handlers:
         check = handler.check_update(update)
         if check is None or check is False:
             continue
@@ -386,6 +393,17 @@ def test_start_command_is_still_matched_by_the_start_command_handler() -> None:
 
     assert isinstance(matched, CommandHandler)
     assert matched.commands == {"start"}
+
+
+def test_restart_command_is_still_matched_by_the_restart_command_handler() -> None:
+    """The catch-all must not shadow ``/restart`` either: registry order wins."""
+    application, bot = _registry_application()
+    update = _bot_command_update("/restart", bot, update_id=3)
+
+    matched = _first_matching_handler(application.handlers[0], update)
+
+    assert isinstance(matched, CommandHandler)
+    assert matched.commands == {"restart"}
 
 
 def test_dispatch_restart_at_interview_resets_and_clears_interview() -> None:

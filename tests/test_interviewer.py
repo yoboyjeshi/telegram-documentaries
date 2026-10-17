@@ -43,11 +43,13 @@ def test_adk_interviewer_requires_a_key() -> None:
 
 
 def test_adk_interviewer_never_logs_the_key(caplog, monkeypatch) -> None:
-    """The real ADK path must never emit the key, even when it fails.
+    """The real ``_run_adk`` path must never emit the key, even when it fails.
 
-    The key-exposure step is monkeypatched to raise, so the genuine ``_run_adk``
-    path runs and fails offline (no network); any code on that path that logged
-    the key would land in ``caplog``.
+    The run is exercised up to and including the key-handling step: the first
+    line of ``_run_adk`` (``ensure_google_api_key``) is monkeypatched to raise,
+    so the genuine ``_run_adk`` path runs offline (no network) and fails at the
+    only place the key is used. Any code on that path that logged the key would
+    land in ``caplog``.
     """
     secret = "SUPER_SECRET_GEMINI_KEY"
     seen: list[str] = []
