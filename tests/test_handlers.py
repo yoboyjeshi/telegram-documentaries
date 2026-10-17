@@ -8,6 +8,9 @@ from app import media
 from app.bouncer import REFUSAL_LINES, BouncerVerdict
 from app.handlers import (
     AWAITING_PHOTO_PROMPT,
+    CONVERTER_CAPTION,
+    CONVERTER_FAILURE_TEXT,
+    CONVERTER_MISSING_PORTRAIT_TEXT,
     GREETING_TEXT,
     INTERVIEW_COMPLETE_TEXT,
     INTERVIEW_FAILURE_TEXT,
@@ -186,3 +189,28 @@ def test_handler_never_raises_even_if_store_fails() -> None:
     reply = handle_start(BoomStore(), _input(kind="command", text="/start", command="start"))
 
     assert reply == FRIENDLY_ERROR
+
+
+def test_converter_texts_exist_and_are_non_empty() -> None:
+    texts = (CONVERTER_CAPTION, CONVERTER_FAILURE_TEXT, CONVERTER_MISSING_PORTRAIT_TEXT)
+    assert all(isinstance(text, str) and text.strip() for text in texts)
+
+
+def test_converter_caption_is_one_short_plain_text_line() -> None:
+    # Plain text for TelegramPhoto caption: single line, no markdown, no emoji,
+    # no em dashes (the house style uses "--").
+    assert "\n" not in CONVERTER_CAPTION
+    assert len(CONVERTER_CAPTION) <= 120
+    assert CONVERTER_CAPTION.isascii()
+    for marker in ("*", "_", "`", "[", "]", "#", "—", "’", "“", "”"):
+        assert marker not in CONVERTER_CAPTION
+
+
+def test_converter_failure_text_offers_a_retry() -> None:
+    lowered = CONVERTER_FAILURE_TEXT.lower()
+    assert "again" in lowered or "retry" in lowered
+
+
+def test_converter_missing_portrait_text_asks_for_restart() -> None:
+    lowered = CONVERTER_MISSING_PORTRAIT_TEXT.lower()
+    assert "/restart" in lowered
