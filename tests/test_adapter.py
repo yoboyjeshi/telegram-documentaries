@@ -68,7 +68,10 @@ def test_unusable_chat_id_returns_none_and_logs_debug_detail(caplog) -> None:
     assert parsed is None
     debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
     assert debug_records
-    assert any(r.exc_info is not None for r in debug_records)
+    assert any("operation=extract_chat_id" in r.getMessage() for r in debug_records)
+    assert any("type=TypeError" in r.getMessage() for r in debug_records)
+    assert all(r.exc_info is None and r.exc_text is None for r in debug_records)
+    assert "int() argument" not in caplog.text
 
 
 def _photo_update(photo: object, chat_id: object = 123) -> SimpleNamespace:

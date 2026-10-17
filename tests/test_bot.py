@@ -319,15 +319,20 @@ def test_build_application_registers_photo_handler() -> None:
 
 
 def test_on_error_logs_the_underlying_exception(caplog) -> None:
+    """The backstop must be observable without logging a provider payload."""
     error = RuntimeError("kaboom")
     context = SimpleNamespace(error=error)
 
     with caplog.at_level(logging.ERROR):
         asyncio.run(bot_module._on_error(None, context))
 
-    records = [record for record in caplog.records if record.exc_info]
-    assert records, "expected an ERROR record carrying the exception"
-    assert records[0].exc_info[1] is error
+    records = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert records, "expected an ERROR record for the unhandled error"
+    message = records[0].getMessage()
+    assert "operation=update_dispatch" in message
+    assert "RuntimeError" in message
+    assert "kaboom" not in caplog.text
+    assert all(record.exc_info is None for record in records)
 
 
 def _bot_command_update(

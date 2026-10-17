@@ -242,6 +242,9 @@ def test_bouncer_failure_logs_no_image_bytes(tmp_path: Path, caplog) -> None:
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert errors
     assert any(
-        "RuntimeError" in r.getMessage() and "gemini timeout" in r.getMessage() for r in errors
+        "RuntimeError" in r.getMessage() and "operation=bouncer" in r.getMessage()
+        for r in errors
     )
+    # The exception message is metadata-free too: it can quote the payload.
+    assert "gemini timeout" not in caplog.text
     assert IMAGE_SENTINEL not in caplog.text

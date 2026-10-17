@@ -283,9 +283,10 @@ def test_summarise_failure_returns_failure_and_does_not_advance() -> None:
 
 
 def test_failure_logs_type_and_message_but_not_answer_text(caplog) -> None:
+    """Fail loud as metadata: a provider message can embed the request payload."""
     store = InMemorySessionStore()
     _at_interview(store, pending="Q1?")
-    interviewer = FakeInterviewer(question_exc=RuntimeError("gemini timeout"))
+    interviewer = FakeInterviewer(question_exc=RuntimeError(f"gemini timeout {ANSWER_SENTINEL}"))
 
     with caplog.at_level(logging.ERROR):
         asyncio.run(
@@ -296,7 +297,9 @@ def test_failure_logs_type_and_message_but_not_answer_text(caplog) -> None:
 
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert errors
-    assert any("RuntimeError" in r.getMessage() and "gemini timeout" in r.getMessage() for r in errors)
+    assert any("RuntimeError" in r.getMessage() and "operation=interviewer" in r.getMessage()
+               for r in errors)
+    assert "gemini timeout" not in caplog.text
     assert ANSWER_SENTINEL not in caplog.text
     # No traceback: a full traceback can embed the request payload.
     assert all(r.exc_info is None for r in errors)

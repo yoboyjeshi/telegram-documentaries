@@ -54,17 +54,22 @@ async def handle_photo_update(
     dest = photo_dest(chat_id, root=media_root or MEDIA_ROOT)
     try:
         await download(incoming.file_id, dest)
-    except Exception:
-        logger.exception("Failed to download photo chat_id=%s", chat_id)
+    except Exception as exc:  # noqa: BLE001 - a failed download stays a friendly retry
+        logger.error(
+            "Failed to download photo chat_id=%s operation=photo_download type=%s",
+            chat_id, type(exc).__name__,
+        )
         store.set_stage(chat_id, Stage.AWAITING_PHOTO)
         return PHOTO_DOWNLOAD_FAILURE_TEXT
 
     try:
         verdict = await bouncer.inspect(dest)
     except Exception as exc:  # noqa: BLE001 - any bouncer error must be handled, not crash
-        # Log type + message only: a full traceback can embed the request
-        # payload (image bytes) from the ADK/Gemini client.
-        logger.error("Bouncer failed chat_id=%s: %s: %s", chat_id, type(exc).__name__, exc)
+        # Metadata only: both a traceback and the exception message can embed
+        # the request payload (the image bytes) from the ADK/Gemini client.
+        logger.error(
+            "Bouncer failed chat_id=%s operation=bouncer type=%s", chat_id, type(exc).__name__
+        )
         store.set_stage(chat_id, Stage.AWAITING_PHOTO)
         return BOUNCER_FAILURE_TEXT
 

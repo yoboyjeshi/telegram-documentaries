@@ -1,4 +1,10 @@
-"""Conversion and scripting share background tasks; update handlers stay sequential."""
+"""One per-chat task registry; update handlers stay sequential.
+
+Every stage that performs external work owns a task here: photo intake, the
+Bouncer call, each Interviewer turn and the Converter/Scripter/Narrator
+pipeline. One active worker per chat, retired workers stay tracked until they
+complete, and a reset invalidates the session before cancelling its worker.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +16,10 @@ from app.session_store import InMemorySessionStore
 
 logger = logging.getLogger("telegram_documentaries")
 Work = Callable[[int], Coroutine[Any, Any, None]]
+
+# Bounded shutdown wait: a dependency that ignores cancellation is reported as
+# pending rather than awaited forever.
+SHUTDOWN_WAIT_SECONDS = 5
 
 
 class ConversionTasks:
@@ -65,6 +75,6 @@ class ConversionTasks:
         for task in tuple(self._all):
             task.cancel()
         if self._all:
-            _, pending = await asyncio.wait(tuple(self._all), timeout=5)
+            _, pending = await asyncio.wait(tuple(self._all), timeout=SHUTDOWN_WAIT_SECONDS)
             if pending:
                 logger.warning("Pipeline shutdown pending count=%s", len(pending))
