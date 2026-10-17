@@ -19,6 +19,25 @@ def test_photo_dest_inside_chat_dir(tmp_path: Path) -> None:
     assert photo == chat_dir / "photo.jpg"
 
 
+def test_avatar_dest_inside_chat_dir(tmp_path: Path) -> None:
+    root = tmp_path
+    chat_dir = media.chat_media_dir(123, root=root)
+    avatar = media.avatar_dest(123, root=root)
+    assert avatar == chat_dir / "avatar.png"
+
+
+def test_purge_chat_media_removes_photo_and_avatar(tmp_path: Path) -> None:
+    root = tmp_path
+    chat_dir = media.chat_media_dir(123, root=root)
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    (chat_dir / "photo.jpg").write_text("portrait")
+    (chat_dir / "avatar.png").write_text("generated")
+
+    media.purge_chat_media(123, root=root)
+
+    assert not chat_dir.exists()
+
+
 def test_purge_chat_media_removes_only_that_chat(tmp_path: Path) -> None:
     root = tmp_path
     chat_dir_a = media.chat_media_dir(123, root=root)

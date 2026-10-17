@@ -19,20 +19,26 @@ from app.bot import (
     dispatch,
     dispatch_safely,
     make_downloader,
+    make_send_photo,
     safe_send_message,
+    safe_send_photo,
 )
 from app.bouncer import BouncerVerdict
 from app.config import Settings
 from app.handlers import (
     AWAITING_PHOTO_PROMPT,
+    CONVERTER_CAPTION,
+    CONVERTER_FAILURE_TEXT,
     GREETING_TEXT,
+    INTERVIEW_COMPLETE_TEXT,
     INTERVIEW_INTRO,
     INTERVIEW_OTHER_REDIRECT_TEXT,
     INTERVIEW_PHOTO_REDIRECT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
 )
-from app.interviewer import InterviewQuestion
+from app.interviewer import TOTAL_QUESTIONS, InterviewQuestion
 from app.logging_config import FRIENDLY_ERROR
+from app.media import avatar_dest, photo_dest
 from app.session_store import InMemorySessionStore
 from app.states import InterviewAnswer, InterviewState, Stage, TraitSummary
 
@@ -437,3 +443,270 @@ def test_dispatch_other_kind_at_interview_redirects_instead_of_silence() -> None
 
     assert reply == INTERVIEW_OTHER_REDIRECT_TEXT
     bot.send_message.assert_awaited_once()
+
+
+# --- Converter wiring: safe_send_photo, handoff, CONVERTING retry -------------
+
+CAPTION_SENTINEL = "CAPTION_SENTINEL_documentary_line"
+from image_fixtures import PNG
+
+IMAGE_SENTINEL = PNG
+
+
+def test_safe_send_photo_sends_photo_with_caption() -> None:
+    bot = AsyncMock()
+    photo = Path("avatar.png")
+
+    assert asyncio.run(safe_send_photo(bot, 1, photo, CAPTION_SENTINEL)) is True
+
+    bot.send_photo.assert_awaited_once_with(chat_id=1, photo=photo, caption=CAPTION_SENTINEL)
+
+
+def test_safe_send_photo_swallows_telegram_error() -> None:
+    bot = AsyncMock()
+    bot.send_photo.side_effect = TelegramError("boom")
+    assert asyncio.run(safe_send_photo(bot, 1, Path("a.png"), "cap")) is False
+
+
+def test_safe_send_photo_swallows_unexpected_exception_and_never_logs_caption(caplog) -> None:
+    """A send failure that is not a TelegramError must still never crash the bot."""
+    bot = AsyncMock()
+    bot.send_photo.side_effect = RuntimeError("unexpected network failure")
+
+    with caplog.at_level(logging.ERROR):
+        result = asyncio.run(safe_send_photo(bot, 1, Path("a.png"), CAPTION_SENTINEL))
+
+    assert result is False
+    assert CAPTION_SENTINEL not in caplog.text
+
+
+def test_make_send_photo_wraps_safe_send_photo() -> None:
+    bot = AsyncMock()
+
+    result = asyncio.run(make_send_photo(bot)(1, Path("a.png"), "cap"))
+
+    assert result is True
+    bot.send_photo.assert_awaited_once()
+
+
+def test_build_application_builds_a_lazy_converter(monkeypatch) -> None:
+    created = {"n": 0}
+
+    class _SpyLazyConverter:
+        def __init__(self, key_provider) -> None:
+            created["n"] += 1
+            self._key_provider = key_provider
+
+    monkeypatch.setattr(bot_module, "LazyConverter", _SpyLazyConverter)
+    settings = Settings(telegram_bot_token="123:dummy")
+    build_application(settings)
+
+    assert created["n"] == 1
+
+
+class _FakeConverter:
+    """Deterministic converter double: records calls, optionally fails."""
+
+    def __init__(self, exc: Exception | None = None) -> None:
+        self._exc = exc
+        self.calls: list[tuple[Path, TraitSummary]] = []
+
+    async def generate_avatar(self, portrait_path: Path, summary: TraitSummary) -> bytes:
+        self.calls.append((portrait_path, summary))
+        if self._exc is not None:
+            raise self._exc
+        return IMAGE_SENTINEL
+
+
+def _send_recorder(delivered: bool = True):
+    calls: list[tuple[int, Path, str]] = []
+
+    async def send_photo(chat_id: int, photo: Path, caption: str) -> bool:
+        calls.append((chat_id, photo, caption))
+        return delivered
+
+    return send_photo, calls
+
+
+def _at_converting(store: InMemorySessionStore, tmp_path: Path, chat_id: int = 1) -> None:
+    state = store.get(chat_id)
+    state.stage = Stage.CONVERTING
+    state.interview = InterviewState(
+        answers=[InterviewAnswer(question=f"Q{i}?", answer=f"a{i}") for i in range(1, TOTAL_QUESTIONS)],
+        summary=TraitSummary(summary="bold explorer", traits=["bold"]),
+    )
+    portrait = photo_dest(chat_id, root=tmp_path)
+    portrait.parent.mkdir(parents=True, exist_ok=True)
+    portrait.write_bytes(b"portrait-bytes")
+
+
+def _at_last_interview_answer(store: InMemorySessionStore) -> None:
+    state = store.get(1)
+    state.stage = Stage.INTERVIEW
+    state.interview = InterviewState(
+        answers=[InterviewAnswer(question=f"Q{i}?", answer=f"a{i}") for i in range(1, TOTAL_QUESTIONS)],
+        pending_question="Q6?",
+    )
+
+
+def test_interview_completion_runs_converter_in_same_turn(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_last_interview_answer(store)
+    portrait = photo_dest(1, root=tmp_path)
+    portrait.parent.mkdir(parents=True, exist_ok=True)
+    portrait.write_bytes(b"portrait-bytes")
+    bot = AsyncMock()
+    converter = _FakeConverter()
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        dispatch(
+            store,
+            _update("final answer"),
+            bot,
+            interviewer=_FakeInterviewer(),
+            converter=converter,
+            send_photo=send_photo,
+            media_root=tmp_path,
+        )
+    )
+
+    assert reply == INTERVIEW_COMPLETE_TEXT
+    assert store.get(1).stage is Stage.SCRIPTING
+    # The acknowledgement text and the avatar photo both went out.
+    bot.send_message.assert_awaited_once_with(chat_id=1, text=INTERVIEW_COMPLETE_TEXT)
+    assert sent == [(1, avatar_dest(1, root=tmp_path), CONVERTER_CAPTION)]
+    assert converter.calls  # the converter ran in the same turn
+    assert not avatar_dest(1, root=tmp_path).exists()  # deleted after the send
+
+
+def test_update_at_converting_reruns_converter(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    bot = AsyncMock()
+    converter = _FakeConverter()
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        dispatch(
+            store,
+            _update("try again"),
+            bot,
+            converter=converter,
+            send_photo=send_photo,
+            media_root=tmp_path,
+        )
+    )
+
+    assert reply is None  # nothing extra beyond the photo
+    assert store.get(1).stage is Stage.SCRIPTING
+    assert sent == [(1, avatar_dest(1, root=tmp_path), CONVERTER_CAPTION)]
+    bot.send_message.assert_not_awaited()
+
+
+def test_update_at_converting_sends_retry_text_when_converter_fails(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    bot = AsyncMock()
+    converter = _FakeConverter(exc=RuntimeError("gemini down"))
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        dispatch(
+            store,
+            _update("try again"),
+            bot,
+            converter=converter,
+            send_photo=send_photo,
+            media_root=tmp_path,
+        )
+    )
+
+    assert reply == CONVERTER_FAILURE_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    assert sent == []
+    bot.send_message.assert_awaited_once_with(chat_id=1, text=CONVERTER_FAILURE_TEXT)
+
+
+def test_interview_handoff_runs_converter_exactly_once_when_it_fails(tmp_path: Path) -> None:
+    """The step must not run twice in one turn (handoff + CONVERTING branch)."""
+    store = InMemorySessionStore()
+    _at_last_interview_answer(store)
+    portrait = photo_dest(1, root=tmp_path)
+    portrait.parent.mkdir(parents=True, exist_ok=True)
+    portrait.write_bytes(b"portrait-bytes")
+    bot = AsyncMock()
+    converter = _FakeConverter(exc=RuntimeError("gemini down"))
+    send_photo, sent = _send_recorder()
+
+    reply = asyncio.run(
+        dispatch(
+            store,
+            _update("final answer"),
+            bot,
+            interviewer=_FakeInterviewer(),
+            converter=converter,
+            send_photo=send_photo,
+            media_root=tmp_path,
+        )
+    )
+
+    assert reply == INTERVIEW_COMPLETE_TEXT
+    assert len(converter.calls) == 1  # exactly one converter run this turn
+    assert store.get(1).stage is Stage.CONVERTING
+    assert sent == []
+    # Acknowledgement first, then the friendly retry.
+    assert bot.send_message.await_count == 2
+    assert bot.send_message.await_args_list[1].kwargs["text"] == CONVERTER_FAILURE_TEXT
+
+
+def test_interview_handoff_without_converter_configured_still_sends_reply(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_last_interview_answer(store)
+    bot = AsyncMock()
+
+    reply = asyncio.run(
+        dispatch(store, _update("final answer"), bot, interviewer=_FakeInterviewer())
+    )
+
+    assert reply == INTERVIEW_COMPLETE_TEXT
+    assert store.get(1).stage is Stage.CONVERTING
+    bot.send_message.assert_awaited_once()
+
+
+def test_update_at_converting_without_converter_configured_warns(tmp_path: Path, caplog) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    bot = AsyncMock()
+
+    with caplog.at_level(logging.WARNING):
+        reply = asyncio.run(dispatch(store, _update("hi"), bot, media_root=tmp_path))
+
+    assert reply is None
+    assert store.get(1).stage is Stage.CONVERTING
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("CONVERTING" in r.getMessage() for r in warnings)
+
+
+def test_dispatch_restart_at_converting_purges_avatar_and_portrait(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    _at_converting(store, tmp_path)
+    avatar = avatar_dest(1, root=tmp_path)
+    avatar.write_bytes(b"stale-avatar")
+    bot = AsyncMock()
+
+    reply = asyncio.run(
+        dispatch(
+            store,
+            _update("/restart"),
+            bot,
+            converter=_FakeConverter(),
+            send_photo=AsyncMock(),
+            media_root=tmp_path,
+        )
+    )
+
+    assert reply == GREETING_TEXT
+    assert store.get(1).stage is Stage.AWAITING_PHOTO
+    assert not avatar.exists()
+    assert not photo_dest(1, root=tmp_path).exists()

@@ -1,23 +1,31 @@
-"""The INTERVIEW-stage orchestrator.
+"""The INTERVIEW and CONVERTING-stage orchestrator.
 
 Owns the ``INTERVIEW``-stage routing and delegates to the typed
-:class:`~app.interviewer.Interviewer`. The pure rules live here: one step of
-progression per valid answer, commit-only-on-success, and a friendly retry when
-a model call fails. Later features (Converter, Scripter, Narrator) extend this
-module; nothing happens after ``CONVERTING`` yet.
+:class:`~app.interviewer.Interviewer` and :class:`~app.converter.Converter`.
+The pure rules live here: one step of progression per valid answer,
+commit-only-on-success, and a friendly retry when a model call fails. The
+``CONVERTING``-stage step generates one hybrid-animal avatar, sends it, and
+advances to ``SCRIPTING``; nothing happens after ``SCRIPTING`` yet.
 
 Logging stays out of the business logic where possible (``@logged`` /
 ``@guard_errors``); the only direct log lines are counts and failure types --
-never answer text, summary text, image bytes, or keys.
+never answer text, summary text, image bytes, the caption, or keys.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.converter import Converter
 from app.handlers import (
+    CONVERTER_CAPTION,
+    CONVERTER_FAILURE_TEXT,
+    CONVERTER_MISSING_PORTRAIT_TEXT,
     INTERVIEW_COMPLETE_TEXT,
     INTERVIEW_FAILURE_TEXT,
     INTERVIEW_INTRO,
@@ -26,8 +34,10 @@ from app.handlers import (
     INTERVIEW_REPROMPT_TEXT,
     INTERVIEW_UNKNOWN_COMMAND_TEXT,
 )
+from app.image_format import image_suffix
 from app.interviewer import TOTAL_QUESTIONS, Interviewer
 from app.logging_config import guard_errors, logged
+from app.media import MEDIA_ROOT, avatar_dest, photo_dest
 from app.session_store import InMemorySessionStore
 from app.states import InterviewAnswer, InterviewState, Stage
 from app.telegram_adapter import ChatInput
@@ -37,6 +47,9 @@ logger = logging.getLogger("telegram_documentaries")
 # A capped, single-line message keeps secret/answer-bearing payloads out of logs;
 # only used for non-validation failures (a ValidationError is logged by type).
 _FAILURE_MESSAGE_MAX = 200
+
+# The photo-send capability injected from bot.py (mirrors photo_flow's DownloadFn).
+SendPhotoFn = Callable[[int, Path, str], Awaitable[bool]]
 
 
 def _log_interviewer_failure(chat_id: int, exc: Exception) -> None:
@@ -56,6 +69,11 @@ def _log_interviewer_failure(chat_id: int, exc: Exception) -> None:
         type(exc).__name__,
         str(exc)[:_FAILURE_MESSAGE_MAX],
     )
+
+
+def _log_converter_failure(chat_id: int, exc: Exception) -> None:
+    """Log metadata only: exception messages may contain keys and model payloads."""
+    logger.error("Converter failed chat_id=%s type=%s", chat_id, type(exc).__name__)
 
 
 @logged
@@ -146,3 +164,79 @@ async def handle_interview_update(
         chat_id,
     )
     return next_question.text
+
+
+def _delete_quietly(path: Path) -> None:
+    """Remove a generated file (best effort) so a retry always starts clean."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not delete generated avatar path=%s", path.name)
+
+
+CONVERSION_TIMEOUT_SECONDS = 120
+PHOTO_SEND_TIMEOUT_SECONDS = 30
+
+
+@logged
+async def handle_converting_update(
+    store: InMemorySessionStore,
+    chat_id: int,
+    *,
+    converter: Converter,
+    send_photo: SendPhotoFn,
+    media_root: Path | None = None,
+    session_version: int | None = None,
+) -> str | None:
+    """Send one validated image; all exits clean only the owning session's files.
+
+    Cancellation is deliberately not caught. Reset invalidates ownership before
+    cancellation, so a delayed old task cannot send, commit, or delete new media.
+    """
+    version = store.version(chat_id) if session_version is None else session_version
+    root = media_root or MEDIA_ROOT
+
+    def check_current() -> None:
+        task = asyncio.current_task()
+        if (store.version(chat_id) != version
+                or store.get(chat_id).stage is not Stage.CONVERTING
+                or (task is not None and task.cancelling())):
+            raise asyncio.CancelledError
+
+    check_current()
+    try:
+        state = store.get(chat_id)
+        summary = state.interview.summary if state.interview is not None else None
+        portrait = photo_dest(chat_id, root=root)
+        if summary is None or not portrait.is_file():
+            logger.warning("Converter missing portrait or summary chat_id=%s", chat_id)
+            return CONVERTER_MISSING_PORTRAIT_TEXT
+
+        async with asyncio.timeout(CONVERSION_TIMEOUT_SECONDS) as deadline:
+            data = await converter.generate_avatar(portrait, summary)
+        check_current()
+        if deadline.expired():
+            raise TimeoutError
+        avatar = avatar_dest(chat_id, root=root, suffix=image_suffix(data))
+        avatar.write_bytes(data)
+        async with asyncio.timeout(PHOTO_SEND_TIMEOUT_SECONDS) as send_deadline:
+            delivered = await send_photo(chat_id, avatar, CONVERTER_CAPTION)
+        check_current()
+        if send_deadline.expired():
+            raise TimeoutError
+        if not delivered:
+            logger.error("Converter photo send not delivered chat_id=%s", chat_id)
+            return CONVERTER_FAILURE_TEXT
+
+        store.set_stage(chat_id, Stage.SCRIPTING)
+        logger.info("converter done chat_id=%s bytes=%d", chat_id, len(data))
+        return None
+    except Exception as exc:  # noqa: BLE001 - external and filesystem failures stay retryable
+        check_current()
+        _log_converter_failure(chat_id, exc)
+        return CONVERTER_FAILURE_TEXT
+    finally:
+        # After reset the command owns cleanup. Never unlink a new session's avatar.
+        if store.version(chat_id) == version:
+            for suffix in (".png", ".jpg"):
+                _delete_quietly(avatar_dest(chat_id, root=root, suffix=suffix))

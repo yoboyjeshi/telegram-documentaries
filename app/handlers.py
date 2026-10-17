@@ -66,6 +66,18 @@ BOUNCER_FAILURE_TEXT = (
     "My image analyst is unavailable right now. Please send your photo again."
 )
 
+CONVERTER_CAPTION = (
+    "And so our subject steps into the wild -- one face, two natures, entirely at home."
+)
+
+CONVERTER_FAILURE_TEXT = (
+    "My portrait artist is having a moment -- send any message and I'll try again."
+)
+
+CONVERTER_MISSING_PORTRAIT_TEXT = (
+    "I seem to have lost your portrait along the way -- send /restart and we'll begin again."
+)
+
 
 @logged
 @guard_errors
