@@ -23,6 +23,10 @@ def photo_dest(chat_id: int, root: Path | None = None) -> Path:
     return chat_media_dir(chat_id, root=root) / "photo.jpg"
 
 
+def avatar_dest(chat_id: int, root: Path | None = None) -> Path:
+    return chat_media_dir(chat_id, root=root) / "avatar.png"
+
+
 def purge_chat_media(chat_id: int, root: Path | None = None) -> None:
     chat_dir = chat_media_dir(chat_id, root=root)
     if chat_dir.exists():
