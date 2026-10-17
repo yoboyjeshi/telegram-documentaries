@@ -100,3 +100,20 @@ scripts/
 
 ## Implementation deviations
 _(Filled in during implementation/validation.)_
+
+- **TG4 + TG5 + TG6 gates run together.** Changing `apply_bouncer_verdict` to
+  return `str | None` made `mypy` fail on `app/photo_flow.py` (the sole caller),
+  so the `photo_flow` consumer change (TG6) had to land with TG4/TG5 to keep
+  `scripts/hooks` green. The intended work of all three groups was implemented;
+  only the gate-run points were merged. No behavioural deviation.
+- **`start_interview` failure path.** The spec describes entry as "asks Q1,
+  replies with `INTERVIEW_INTRO` + Q1" but does not state what to do if that very
+  first Gemini call fails. Chosen behaviour (consistent with the self-heal and
+  commit-only-on-success rules): return `INTERVIEW_FAILURE_TEXT`, leave a fresh
+  `InterviewState` with no pending question, and let the next text self-heal by
+  asking Q1 again. Covered by a test.
+- **`record(answer)` records the answer verbatim.** Blank/whitespace text is
+  rejected before `record` is called; non-blank answers are stored as received.
+- **`handle_interview_update` treats any non-text/non-photo kind as an unknown
+  command** (nudge), since `/start` and `/restart` are handled earlier in
+  `bot.dispatch` and the adapter only produces `command`/`text`/`photo`/`other`.

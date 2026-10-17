@@ -22,9 +22,13 @@ class InMemorySessionStore:
         return self._sessions[chat_id]
 
     def reset(self, chat_id: int) -> SessionState:
-        """Return ``chat_id`` to ``GREETING``. Legal from any stage."""
+        """Return ``chat_id`` to ``GREETING`` and clear any interview state.
+
+        Legal from any stage; a full reset drops interview progress too.
+        """
         state = self.get(chat_id)
         state.stage = Stage.GREETING
+        state.interview = None
         return state
 
     def set_stage(self, chat_id: int, stage: Stage) -> SessionState:

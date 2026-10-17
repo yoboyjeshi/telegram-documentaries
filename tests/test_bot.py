@@ -21,10 +21,17 @@ from app.bot import (
 )
 from app.bouncer import BouncerVerdict
 from app.config import Settings
-from app.handlers import AWAITING_PHOTO_PROMPT, GREETING_TEXT, INTERVIEW_READY_TEXT
+from app.handlers import (
+    AWAITING_PHOTO_PROMPT,
+    GREETING_TEXT,
+    INTERVIEW_INTRO,
+    INTERVIEW_PHOTO_REDIRECT_TEXT,
+    INTERVIEW_UNKNOWN_COMMAND_TEXT,
+)
+from app.interviewer import InterviewQuestion
 from app.logging_config import FRIENDLY_ERROR
 from app.session_store import InMemorySessionStore
-from app.states import Stage
+from app.states import InterviewAnswer, InterviewState, Stage, TraitSummary
 
 
 def _update(text: str, chat_id: int = 1) -> SimpleNamespace:
@@ -155,17 +162,123 @@ class _FakeBouncer:
         return BouncerVerdict(is_human=self._is_human)
 
 
+class _FakeInterviewer:
+    async def next_question(self, history: list[InterviewAnswer]) -> InterviewQuestion:
+        return InterviewQuestion(text=f"Q{len(history) + 1}?")
+
+    async def summarise(self, history: list[InterviewAnswer]) -> TraitSummary:
+        return TraitSummary(summary="done")
+
+
 def test_dispatch_routes_photo_to_flow(tmp_path: Path) -> None:
     store = InMemorySessionStore()
     store.set_stage(1, Stage.AWAITING_PHOTO)
     bot = AsyncMock()
 
     reply = asyncio.run(
-        dispatch(store, _photo_update(), bot, bouncer=_FakeBouncer(True), media_root=tmp_path)
+        dispatch(
+            store,
+            _photo_update(),
+            bot,
+            bouncer=_FakeBouncer(True),
+            interviewer=_FakeInterviewer(),
+            media_root=tmp_path,
+        )
     )
 
-    assert reply == INTERVIEW_READY_TEXT
+    assert INTERVIEW_INTRO in reply
+    assert "Q1?" in reply
     assert store.get(1).stage is Stage.INTERVIEW
+
+
+def test_dispatch_text_at_interview_records_answer_and_progresses() -> None:
+    store = InMemorySessionStore()
+    store.get(1).stage = Stage.INTERVIEW
+    store.get(1).interview = InterviewState(pending_question="Q1?")
+    bot = AsyncMock()
+
+    reply = asyncio.run(
+        dispatch(store, _update("my answer"), bot, interviewer=_FakeInterviewer())
+    )
+
+    assert reply == "Q2?"
+    state = store.get(1)
+    assert state.stage is Stage.INTERVIEW
+    assert state.interview is not None
+    assert state.interview.answers == [InterviewAnswer(question="Q1?", answer="my answer")]
+    bot.send_message.assert_awaited_once()
+
+
+def test_dispatch_photo_at_interview_redirects_without_download() -> None:
+    store = InMemorySessionStore()
+    store.get(1).stage = Stage.INTERVIEW
+    store.get(1).interview = InterviewState(pending_question="Q1?")
+    bot = AsyncMock()
+
+    reply = asyncio.run(
+        dispatch(
+            store,
+            _photo_update(),
+            bot,
+            bouncer=_FakeBouncer(True),
+            interviewer=_FakeInterviewer(),
+        )
+    )
+
+    state = store.get(1)
+    assert reply == INTERVIEW_PHOTO_REDIRECT_TEXT
+    assert state.stage is Stage.INTERVIEW
+    assert state.interview is not None
+    assert state.interview.pending_question == "Q1?"
+    bot.get_file.assert_not_awaited()  # the photo never reaches the download path
+
+
+def test_dispatch_unknown_command_at_interview_nudges_without_advancing() -> None:
+    store = InMemorySessionStore()
+    store.get(1).stage = Stage.INTERVIEW
+    store.get(1).interview = InterviewState(pending_question="Q1?")
+    bot = AsyncMock()
+
+    reply = asyncio.run(
+        dispatch(store, _update("/foo"), bot, interviewer=_FakeInterviewer())
+    )
+
+    state = store.get(1)
+    assert reply == INTERVIEW_UNKNOWN_COMMAND_TEXT
+    assert state.stage is Stage.INTERVIEW
+    assert state.interview is not None
+    assert state.interview.answers == []
+    assert state.interview.pending_question == "Q1?"
+
+
+def test_dispatch_start_at_interview_resets_and_clears_interview(tmp_path: Path) -> None:
+    store = InMemorySessionStore()
+    store.get(1).stage = Stage.INTERVIEW
+    store.get(1).interview = InterviewState(pending_question="Q1?")
+    bot = AsyncMock()
+
+    reply = asyncio.run(
+        dispatch(store, _update("/start"), bot, interviewer=_FakeInterviewer())
+    )
+
+    assert reply == GREETING_TEXT
+    assert store.get(1).stage is Stage.AWAITING_PHOTO
+    assert store.get(1).interview is None
+
+
+def test_build_application_builds_a_lazy_interviewer(monkeypatch) -> None:
+    created = {"n": 0}
+
+    class _SpyLazyInterviewer:
+        def __init__(self, key_provider) -> None:
+            created["n"] += 1
+            self._key_provider = key_provider
+
+    monkeypatch.setattr(bot_module, "LazyInterviewer", _SpyLazyInterviewer)
+    settings = Settings(telegram_bot_token="123:dummy")
+    build_application(settings)
+
+    assert created["n"] == 1
 
 
 def test_dispatch_text_at_awaiting_photo_prompts() -> None:

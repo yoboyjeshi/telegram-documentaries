@@ -15,13 +15,16 @@ from telegram.ext import (
     filters,
 )
 
+from app import orchestrator
 from app.bouncer import Bouncer, LazyBouncer
 from app.config import Settings
 from app.handlers import handle_restart, handle_start, handle_text
+from app.interviewer import Interviewer, LazyInterviewer
 from app.logging_config import FRIENDLY_ERROR
 from app.media import MEDIA_ROOT
 from app.photo_flow import DownloadFn, handle_photo_update
 from app.session_store import InMemorySessionStore
+from app.states import Stage
 from app.telegram_adapter import extract_chat_input
 
 logger = logging.getLogger("telegram_documentaries")
@@ -59,6 +62,7 @@ async def dispatch(
     bot: Bot,
     *,
     bouncer: Bouncer | None = None,
+    interviewer: Interviewer | None = None,
     media_root: Path | None = None,
 ) -> str | None:
     """Route an update to the right handler and send the reply."""
@@ -67,21 +71,32 @@ async def dispatch(
         logger.warning("Ignoring unsupported update")
         return None
 
+    stage = store.get(incoming.chat_id).stage
+
     if incoming.kind == "command" and incoming.command == "start":
         reply = handle_start(store, incoming, media_root=media_root)
     elif incoming.kind == "command" and incoming.command == "restart":
         reply = handle_restart(store, incoming, media_root=media_root)
+    elif stage is Stage.INTERVIEW and incoming.kind in ("text", "photo", "command"):
+        # Photos at INTERVIEW must never reach the download path.
+        if interviewer is None:
+            logger.warning("Update at INTERVIEW but no Interviewer is configured")
+            return None
+        reply = await orchestrator.handle_interview_update(
+            store, incoming, interviewer=interviewer
+        )
     elif incoming.kind == "text":
         reply = handle_text(store, incoming)
     elif incoming.kind == "photo":
-        if bouncer is None:
-            logger.warning("Photo received but no Bouncer is configured")
+        if bouncer is None or interviewer is None:
+            logger.warning("Photo received but a required dependency is not configured")
             return None
         reply = await handle_photo_update(
             store,
             incoming,
             bouncer=bouncer,
             download=make_downloader(bot),
+            interviewer=interviewer,
             media_root=media_root,
         )
     else:
@@ -100,6 +115,7 @@ async def dispatch_safely(
     bot: Bot,
     *,
     bouncer: Bouncer | None = None,
+    interviewer: Interviewer | None = None,
     media_root: Path | None = None,
 ) -> str | None:
     """Run :func:`dispatch`, delivering a friendly message if it raises.
@@ -108,7 +124,14 @@ async def dispatch_safely(
     outside them: the user must never be left with silence.
     """
     try:
-        return await dispatch(store, update, bot, bouncer=bouncer, media_root=media_root)
+        return await dispatch(
+            store,
+            update,
+            bot,
+            bouncer=bouncer,
+            interviewer=interviewer,
+            media_root=media_root,
+        )
     except Exception:
         logger.exception("Unhandled error while handling update")
         try:
@@ -143,6 +166,7 @@ def build_application(
         .build()
     )
     bouncer = LazyBouncer(settings.require_gemini_key)
+    interviewer = LazyInterviewer(settings.require_gemini_key)
 
     async def _handle(update: Update, context: CallbackContext) -> None:
         await dispatch_safely(
@@ -150,6 +174,7 @@ def build_application(
             update,
             context.bot,
             bouncer=bouncer,
+            interviewer=interviewer,
             media_root=MEDIA_ROOT,
         )
 

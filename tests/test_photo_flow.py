@@ -9,18 +9,27 @@ from pathlib import Path
 from app.bouncer import REFUSAL_LINES, BouncerVerdict
 from app.handlers import (
     BOUNCER_FAILURE_TEXT,
-    INTERVIEW_READY_TEXT,
+    INTERVIEW_INTRO,
     PHOTO_DOWNLOAD_FAILURE_TEXT,
     PHOTO_REDIRECT_TEXT,
 )
+from app.interviewer import InterviewQuestion
 from app.photo_flow import handle_photo_update
 from app.session_store import InMemorySessionStore
-from app.states import Stage
+from app.states import InterviewAnswer, Stage, TraitSummary
 from app.telegram_adapter import ChatInput
 
 # A long, unlikely-to-collide sentinel for the fake image bytes, so the
 # "image bytes never reach the log" assertions cannot pass by coincidence.
 IMAGE_SENTINEL = "IMG_BYTES_SENTINEL_9f3a"
+
+
+class FakeInterviewer:
+    async def next_question(self, history: list[InterviewAnswer]) -> InterviewQuestion:
+        return InterviewQuestion(text="Q1?")
+
+    async def summarise(self, history: list[InterviewAnswer]) -> TraitSummary:
+        return TraitSummary(summary="done")
 
 
 def _photo(chat_id: int = 1, file_id: str | None = "fid") -> ChatInput:
@@ -53,18 +62,26 @@ def _awaiting(chat_id: int = 1) -> InMemorySessionStore:
     return store
 
 
-def test_human_photo_advances_to_interview(tmp_path: Path) -> None:
+def test_human_photo_starts_interview_with_intro_and_q1(tmp_path: Path) -> None:
     store = _awaiting()
     bouncer = FakeBouncer(BouncerVerdict(is_human=True))
 
     reply = asyncio.run(
         handle_photo_update(
-            store, _photo(), bouncer=bouncer, download=_ok_download, media_root=tmp_path
+            store,
+            _photo(),
+            bouncer=bouncer,
+            download=_ok_download,
+            interviewer=FakeInterviewer(),
+            media_root=tmp_path,
         )
     )
 
-    assert reply == INTERVIEW_READY_TEXT
     assert store.get(1).stage is Stage.INTERVIEW
+    assert store.get(1).interview is not None
+    assert store.get(1).interview.pending_question == "Q1?"
+    assert INTERVIEW_INTRO in reply
+    assert "Q1?" in reply
     assert bouncer.calls == 1
 
 
@@ -74,12 +91,18 @@ def test_non_human_photo_refuses_and_stays_awaiting(tmp_path: Path) -> None:
 
     reply = asyncio.run(
         handle_photo_update(
-            store, _photo(), bouncer=bouncer, download=_ok_download, media_root=tmp_path
+            store,
+            _photo(),
+            bouncer=bouncer,
+            download=_ok_download,
+            interviewer=FakeInterviewer(),
+            media_root=tmp_path,
         )
     )
 
     assert reply in REFUSAL_LINES
     assert store.get(1).stage is Stage.AWAITING_PHOTO
+    assert store.get(1).interview is None
 
 
 def test_photo_at_wrong_stage_redirects_without_download(tmp_path: Path) -> None:
@@ -93,7 +116,12 @@ def test_photo_at_wrong_stage_redirects_without_download(tmp_path: Path) -> None
 
     reply = asyncio.run(
         handle_photo_update(
-            store, _photo(), bouncer=bouncer, download=download, media_root=tmp_path
+            store,
+            _photo(),
+            bouncer=bouncer,
+            download=download,
+            interviewer=FakeInterviewer(),
+            media_root=tmp_path,
         )
     )
 
@@ -112,7 +140,12 @@ def test_download_failure_is_notified_and_stage_recovered(tmp_path: Path) -> Non
 
     reply = asyncio.run(
         handle_photo_update(
-            store, _photo(), bouncer=bouncer, download=boom, media_root=tmp_path
+            store,
+            _photo(),
+            bouncer=bouncer,
+            download=boom,
+            interviewer=FakeInterviewer(),
+            media_root=tmp_path,
         )
     )
 
@@ -127,7 +160,12 @@ def test_bouncer_failure_is_notified_and_stage_recovered(tmp_path: Path) -> None
 
     reply = asyncio.run(
         handle_photo_update(
-            store, _photo(), bouncer=bouncer, download=_ok_download, media_root=tmp_path
+            store,
+            _photo(),
+            bouncer=bouncer,
+            download=_ok_download,
+            interviewer=FakeInterviewer(),
+            media_root=tmp_path,
         )
     )
 
@@ -141,7 +179,12 @@ def test_missing_file_id_is_handled_without_crash(tmp_path: Path) -> None:
 
     reply = asyncio.run(
         handle_photo_update(
-            store, _photo(file_id=None), bouncer=bouncer, download=_ok_download, media_root=tmp_path
+            store,
+            _photo(file_id=None),
+            bouncer=bouncer,
+            download=_ok_download,
+            interviewer=FakeInterviewer(),
+            media_root=tmp_path,
         )
     )
 
@@ -156,7 +199,12 @@ def test_flow_logs_verdict_not_image_bytes(tmp_path: Path, caplog) -> None:
     with caplog.at_level(logging.INFO):
         asyncio.run(
             handle_photo_update(
-                store, _photo(), bouncer=bouncer, download=_ok_download, media_root=tmp_path
+                store,
+                _photo(),
+                bouncer=bouncer,
+                download=_ok_download,
+                interviewer=FakeInterviewer(),
+                media_root=tmp_path,
             )
         )
 
@@ -183,6 +231,7 @@ def test_bouncer_failure_logs_no_image_bytes(tmp_path: Path, caplog) -> None:
                 _photo(),
                 bouncer=PayloadBouncer(),
                 download=_ok_download,
+                interviewer=FakeInterviewer(),
                 media_root=tmp_path,
             )
         )

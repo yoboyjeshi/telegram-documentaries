@@ -15,10 +15,9 @@ from app.bouncer import (
     AdkBouncer,
     BouncerVerdict,
     LazyBouncer,
-    _ensure_google_api_key,
     refusal_text,
 )
-from app.config import ConfigurationError
+from app.config import ConfigurationError, ensure_google_api_key
 
 
 def test_verdict_defaults_reason_to_none() -> None:
@@ -71,7 +70,7 @@ def test_adkbouncer_never_logs_the_key(tmp_path: Path, caplog) -> None:
 def test_google_api_key_is_set_when_absent(monkeypatch, caplog) -> None:
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with caplog.at_level(logging.WARNING):
-        _ensure_google_api_key("SUPPLIED_BOUNCER_KEY")
+        ensure_google_api_key("SUPPLIED_BOUNCER_KEY")
     assert os.environ["GOOGLE_API_KEY"] == "SUPPLIED_BOUNCER_KEY"
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
@@ -79,7 +78,7 @@ def test_google_api_key_is_set_when_absent(monkeypatch, caplog) -> None:
 def test_existing_google_api_key_is_kept_and_warned_about(monkeypatch, caplog) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "PRESET_ENV_KEY")
     with caplog.at_level(logging.WARNING):
-        _ensure_google_api_key("SUPPLIED_BOUNCER_KEY")
+        ensure_google_api_key("SUPPLIED_BOUNCER_KEY")
     # The pre-existing env value wins; the anomaly is logged without any key value.
     assert os.environ["GOOGLE_API_KEY"] == "PRESET_ENV_KEY"
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]

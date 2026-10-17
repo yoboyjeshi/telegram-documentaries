@@ -9,7 +9,12 @@ from app.bouncer import REFUSAL_LINES, BouncerVerdict
 from app.handlers import (
     AWAITING_PHOTO_PROMPT,
     GREETING_TEXT,
-    INTERVIEW_READY_TEXT,
+    INTERVIEW_COMPLETE_TEXT,
+    INTERVIEW_FAILURE_TEXT,
+    INTERVIEW_INTRO,
+    INTERVIEW_PHOTO_REDIRECT_TEXT,
+    INTERVIEW_REPROMPT_TEXT,
+    INTERVIEW_UNKNOWN_COMMAND_TEXT,
     PHOTO_REDIRECT_TEXT,
     apply_bouncer_verdict,
     handle_photo_wrong_stage,
@@ -107,7 +112,9 @@ def test_apply_human_verdict_advances_to_interview() -> None:
 
     reply = apply_bouncer_verdict(store, 1, BouncerVerdict(is_human=True))
 
-    assert reply == INTERVIEW_READY_TEXT
+    # A human verdict advances the stage and hands off to the caller (no reply
+    # text of its own); the caller starts the interview.
+    assert reply is None
     assert store.get(1).stage is Stage.INTERVIEW
 
 
@@ -131,8 +138,37 @@ def test_photo_wrong_stage_redirects_without_changing_stage() -> None:
     assert store.get(1).stage is Stage.GREETING
 
 
-def test_interview_ready_text_asks_no_question() -> None:
-    assert "?" not in INTERVIEW_READY_TEXT
+def test_interview_texts_are_non_empty_strings() -> None:
+    texts = (
+        INTERVIEW_INTRO,
+        INTERVIEW_PHOTO_REDIRECT_TEXT,
+        INTERVIEW_REPROMPT_TEXT,
+        INTERVIEW_COMPLETE_TEXT,
+        INTERVIEW_FAILURE_TEXT,
+        INTERVIEW_UNKNOWN_COMMAND_TEXT,
+    )
+    assert all(isinstance(text, str) and text.strip() for text in texts)
+
+
+def test_interview_photo_redirect_asks_for_a_written_answer() -> None:
+    lowered = INTERVIEW_PHOTO_REDIRECT_TEXT.lower()
+    assert "answer" in lowered or "message" in lowered or "words" in lowered
+
+
+def test_interview_reask_asks_for_a_written_answer() -> None:
+    lowered = INTERVIEW_REPROMPT_TEXT.lower()
+    assert "answer" in lowered or "question" in lowered
+
+
+def test_interview_unknown_command_nudges_to_answer_or_restart() -> None:
+    lowered = INTERVIEW_UNKNOWN_COMMAND_TEXT.lower()
+    assert "answer" in lowered
+    assert "/restart" in lowered
+
+
+def test_interview_failure_text_offers_a_retry() -> None:
+    lowered = INTERVIEW_FAILURE_TEXT.lower()
+    assert "again" in lowered or "retry" in lowered
 
 
 def test_handler_never_raises_even_if_store_fails() -> None:

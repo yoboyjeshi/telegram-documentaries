@@ -11,6 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from app import orchestrator
 from app.bouncer import Bouncer
 from app.handlers import (
     BOUNCER_FAILURE_TEXT,
@@ -18,6 +19,7 @@ from app.handlers import (
     apply_bouncer_verdict,
     handle_photo_wrong_stage,
 )
+from app.interviewer import Interviewer
 from app.media import MEDIA_ROOT, photo_dest
 from app.session_store import InMemorySessionStore
 from app.states import Stage
@@ -34,6 +36,7 @@ async def handle_photo_update(
     *,
     bouncer: Bouncer,
     download: DownloadFn,
+    interviewer: Interviewer,
     media_root: Path | None = None,
 ) -> str:
     """Handle a photo update: verify it, then advance or refuse. Never raises."""
@@ -66,4 +69,9 @@ async def handle_photo_update(
         return BOUNCER_FAILURE_TEXT
 
     logger.info("Bouncer verdict chat_id=%s is_human=%s", chat_id, verdict.is_human)
-    return apply_bouncer_verdict(store, chat_id, verdict)
+    reply = apply_bouncer_verdict(store, chat_id, verdict)
+    if reply is None:
+        # A human verdict sets INTERVIEW and hands off: start the interview now
+        # so the entry reply asks question 1.
+        return await orchestrator.start_interview(store, chat_id, interviewer=interviewer)
+    return reply

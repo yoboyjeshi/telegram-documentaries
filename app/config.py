@@ -6,14 +6,36 @@ and can never be logged by accident.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, SecretStr
 
+logger = logging.getLogger("telegram_documentaries")
+
 
 class ConfigurationError(RuntimeError):
     """Raised when required configuration is missing or invalid."""
+
+
+def ensure_google_api_key(api_key: str) -> None:
+    """Expose the key to the ADK/Gemini clients without ever logging its value.
+
+    A pre-existing ``GOOGLE_API_KEY`` wins (``setdefault`` semantics). Warn only
+    when a *different* value is already set, so a misconfiguration is observable
+    rather than silently masked; an identical value is a silent no-op. No key
+    value (old or new) is ever logged.
+    """
+    existing = os.environ.get("GOOGLE_API_KEY")
+    if existing:
+        if existing != api_key:
+            logger.warning(
+                "GOOGLE_API_KEY is already set in the environment; "
+                "the existing value takes precedence over the supplied agent key."
+            )
+        return
+    os.environ["GOOGLE_API_KEY"] = api_key
 
 
 class Settings(BaseModel):
