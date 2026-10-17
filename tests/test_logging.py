@@ -112,7 +112,10 @@ def test_guard_errors_logs_and_returns_fallback(caplog) -> None:
 
     assert result == FRIENDLY_ERROR
     assert any(record.levelno == logging.ERROR for record in caplog.records)
-    assert any(record.exc_info for record in caplog.records)
+    assert all(record.exc_info is None for record in caplog.records)
+    assert "type=RuntimeError" in caplog.text
+    assert "handler=boom" in caplog.text
+    assert "kaboom" not in caplog.text
 
 
 def test_http_request_urls_are_not_logged(caplog) -> None:

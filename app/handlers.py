@@ -7,6 +7,7 @@ returns the reply text. Photo intake that needs I/O lives in
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from app.bouncer import BouncerVerdict, refusal_text
@@ -15,6 +16,8 @@ from app.media import MEDIA_ROOT, purge_chat_media
 from app.session_store import InMemorySessionStore
 from app.states import Stage
 from app.telegram_adapter import ChatInput
+
+logger = logging.getLogger("telegram_documentaries")
 
 GREETING_TEXT = (
     "Welcome to The Telegram Documentaries! "
@@ -62,6 +65,16 @@ INTERVIEW_OTHER_REDIRECT_TEXT = (
 
 PHOTO_DOWNLOAD_FAILURE_TEXT = "I couldn't fetch that photo just now. Please send it again."
 
+UNSUPPORTED_UPLOAD_PHOTO_TEXT = (
+    "I can only work from a normal Telegram photo -- "
+    "please send your portrait as a photo rather than a file or sticker."
+)
+
+GENERATION_UNSUPPORTED_TEXT = (
+    "My crew is still working on your documentary -- "
+    "there's nothing for me to do with that just yet."
+)
+
 BOUNCER_FAILURE_TEXT = (
     "My image analyst is unavailable right now. Please send your photo again."
 )
@@ -79,16 +92,31 @@ CONVERTER_MISSING_PORTRAIT_TEXT = (
 )
 
 
+def _reset_to_awaiting_photo(
+    store: InMemorySessionStore, chat_id: int, media_root: Path | None
+) -> str:
+    """Invalidate, clear state, enter ``AWAITING_PHOTO``, then purge temp media.
+
+    The stage is committed before the filesystem work, so a purge failure still
+    leaves a usable session awaiting a photo instead of a stranded reset. The
+    failure is logged as metadata only (never a path or a raw OS message).
+    """
+    store.reset(chat_id)
+    store.set_stage(chat_id, Stage.AWAITING_PHOTO)
+    try:
+        purge_chat_media(chat_id, root=media_root or MEDIA_ROOT)
+    except OSError as exc:
+        logger.error("operation=media_purge chat_id=%s type=%s", chat_id, type(exc).__name__)
+    return GREETING_TEXT
+
+
 @logged
 @guard_errors
 def handle_start(
     store: InMemorySessionStore, incoming: ChatInput, media_root: Path | None = None
 ) -> str:
     """Greet, reset this chat, purge its temp media, and await a photo."""
-    store.reset(incoming.chat_id)
-    purge_chat_media(incoming.chat_id, root=media_root or MEDIA_ROOT)
-    store.set_stage(incoming.chat_id, Stage.AWAITING_PHOTO)
-    return GREETING_TEXT
+    return _reset_to_awaiting_photo(store, incoming.chat_id, media_root)
 
 
 @logged
@@ -97,10 +125,7 @@ def handle_restart(
     store: InMemorySessionStore, incoming: ChatInput, media_root: Path | None = None
 ) -> str:
     """Same as ``/start``: reset, purge temp media, and await a photo."""
-    store.reset(incoming.chat_id)
-    purge_chat_media(incoming.chat_id, root=media_root or MEDIA_ROOT)
-    store.set_stage(incoming.chat_id, Stage.AWAITING_PHOTO)
-    return GREETING_TEXT
+    return _reset_to_awaiting_photo(store, incoming.chat_id, media_root)
 
 
 @logged

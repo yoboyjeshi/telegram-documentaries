@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from io import BytesIO
 from pathlib import Path
 
 from telegram import Bot, Update
@@ -15,12 +17,19 @@ from telegram.ext import (
     filters,
 )
 
-from app import audio_encoding, orchestrator
+from app import audio_encoding, early_flow, orchestrator
 from app.bouncer import Bouncer, LazyBouncer
 from app.config import Settings
-from app.conversion_tasks import ConversionTasks
+from app.conversion_tasks import ConversionTasks, Work
 from app.converter import Converter, LazyConverter
-from app.handlers import handle_restart, handle_start, handle_text
+from app.handlers import (
+    GENERATION_UNSUPPORTED_TEXT,
+    UNSUPPORTED_UPLOAD_PHOTO_TEXT,
+    handle_photo_wrong_stage,
+    handle_restart,
+    handle_start,
+    handle_text,
+)
 from app.interviewer import Interviewer, LazyInterviewer
 from app.logging_config import FRIENDLY_ERROR
 from app.media import MEDIA_ROOT
@@ -30,27 +39,82 @@ from app.photo_flow import DownloadFn, handle_photo_update
 from app.scripter import LazyScripter, Scripter
 from app.session_store import InMemorySessionStore
 from app.states import Stage
-from app.telegram_adapter import extract_chat_input
+from app.telegram_adapter import ChatInput, extract_chat_input
 
 logger = logging.getLogger("telegram_documentaries")
 
+# An upload we cannot use (document, sticker, voice note) gets stage-specific
+# guidance instead of silence, and never reaches a download or a model.
+_UNSUPPORTED_UPLOAD_TEXTS = {
+    Stage.AWAITING_PHOTO: UNSUPPORTED_UPLOAD_PHOTO_TEXT,
+    Stage.BOUNCER_CHECK: GENERATION_UNSUPPORTED_TEXT,
+    Stage.CONVERTING: GENERATION_UNSUPPORTED_TEXT,
+    Stage.SCRIPTING: GENERATION_UNSUPPORTED_TEXT,
+    Stage.NARRATING: GENERATION_UNSUPPORTED_TEXT,
+}
+
 
 async def safe_send_message(bot: Bot, chat_id: int, text: str) -> bool:
-    """Send a Telegram message; a failure is logged and swallowed, never raised.
+    """Apply the app send deadline; failures return False, cancellation propagates.
+
+    Update handlers are sequential and blocking, so any send performed before a
+    callback returns would otherwise be able to park every later update for
+    all chats, resets included. The deadline is therefore applied here, on the
+    single shared send primitive, and re-checked explicitly: a transport that
+    absorbs its own cancellation and reports success is still treated as
+    undelivered. Callers that bound a send themselves (``early_flow._deliver``)
+    simply enter their deadline first, so the earlier one binds and this stays
+    defence in depth. Cancellation is cooperative: a transport that never returns
+    cannot be forcibly stopped by this context, so it is not a hard wall-clock cap.
 
     Catches ``Exception`` (never ``BaseException``) so an unexpected send error
     cannot crash the poller while ``asyncio.CancelledError`` still propagates.
     """
     try:
-        await bot.send_message(chat_id=chat_id, text=text)
+        async with asyncio.timeout(early_flow.EARLY_SEND_TIMEOUT_SECONDS) as deadline:
+            await bot.send_message(chat_id=chat_id, text=text)
+        if deadline.expired():
+            raise TimeoutError
         return True
     except Exception as exc:  # noqa: BLE001 - guarded sends must not crash the poller
         logger.error("Failed to send message chat_id=%s type=%s", chat_id, type(exc).__name__)
         return False
 
 
+def make_memory_downloader(
+    bot: Bot, *, limit: int = early_flow.MAX_PORTRAIT_BYTES
+) -> early_flow.DownloadBytesFn:
+    """Build an in-memory portrait fetcher that is handed no filesystem path.
+
+    The advertised ``file_size`` is prechecked and the received length is
+    rechecked, so metadata that is missing or lying cannot widen the cap. The
+    cap is an admission and publication bound only -- it decides what is handed
+    to the Bouncer and written to media. It is NOT a bound on memory held:
+    ``python-telegram-bot`` retrieves the whole response body before the sink is
+    written, and this ``BytesIO`` grows unbounded until the length is checked.
+    """
+
+    async def download(file_id: str) -> bytes:
+        telegram_file = await bot.get_file(file_id)
+        advertised = getattr(telegram_file, "file_size", None)
+        if isinstance(advertised, int) and advertised > limit:
+            raise early_flow.PortraitRejected("advertised_oversize")
+        sink = BytesIO()
+        await telegram_file.download_to_memory(sink)
+        data = sink.getvalue()
+        if len(data) > limit:
+            raise early_flow.PortraitRejected("oversize")
+        return data
+
+    return download
+
+
 def make_downloader(bot: Bot) -> DownloadFn:
-    """Build the Telegram photo downloader, writing to a chat-namespaced path."""
+    """Build the path-writing downloader kept for the in-line photo seam.
+
+    ``build_application`` wires :func:`make_memory_downloader` instead, so the
+    live bot never lets a download recreate media after a reset.
+    """
 
     async def download(file_id: str, dest: Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -119,6 +183,7 @@ async def dispatch(
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
     conversion_tasks: ConversionTasks | None = None,
+    download_bytes: early_flow.DownloadBytesFn | None = None,
 ) -> str | None:
     """Route an update to the right handler and send the reply.
 
@@ -130,6 +195,10 @@ async def dispatch(
     A configured Scripter continues in that same task after photo delivery;
     updates at SCRIPTING retry scripting then narration. NARRATING retries only
     audio; DONE stops the pipeline.
+
+    With a registry and ``download_bytes`` configured, photo intake and each
+    interview turn also run as tracked workers, so no external call happens on
+    the handler itself and a reset never waits on one.
     """
     incoming = extract_chat_input(update)
     if incoming is None:
@@ -140,12 +209,11 @@ async def dispatch(
     stage = store.get(chat_id).stage
     ran_converter = False
 
+    async def send_message(chat: int, text: str) -> bool:
+        return await safe_send_message(bot, chat, text)
+
     async def narrate(version: int) -> None:
         assert narrator is not None
-
-        async def send_message(chat: int, text: str) -> bool:
-            return await safe_send_message(bot, chat, text)
-
         await orchestrator.handle_narrating_update(
             store, chat_id, narrator=narrator, send_voice=send_voice or make_send_voice(bot),
             send_message=send_message, media_root=media_root, session_version=version,
@@ -154,10 +222,6 @@ async def dispatch(
 
     async def script(version: int) -> None:
         assert scripter is not None
-
-        async def send_message(chat: int, text: str) -> bool:
-            return await safe_send_message(bot, chat, text)
-
         await orchestrator.handle_scripting_update(
             store, chat_id, scripter=scripter, send_message=send_message,
             session_version=version,
@@ -179,18 +243,24 @@ async def dispatch(
             await script(version)
         return result
 
+    async def run_pipeline(version: int) -> None:
+        result = await convert_step(version)
+        if result is not None and store.version(chat_id) == version:
+            await safe_send_message(bot, chat_id, result)
+
     async def convert() -> str | None:
         if conversion_tasks is None:
             # Explicit awaitable seam; the live app always supplies the registry.
             return await convert_step(store.version(chat_id))
-
-        async def work(version: int) -> None:
-            result = await convert_step(version)
-            if result is not None and store.version(chat_id) == version:
-                await safe_send_message(bot, chat_id, result)
-
-        conversion_tasks.start(chat_id, work)
+        conversion_tasks.start(chat_id, run_pipeline)
         return None
+
+    async def after_interview(version: int) -> None:
+        """Continue into the pipeline inside the interview worker's own task."""
+        if converter is None or send_photo is None:
+            logger.warning("Interview complete but no Converter is configured")
+            return
+        await run_pipeline(version)
 
     if (incoming.kind == "command" and incoming.command in ("start", "restart")
             and conversion_tasks is not None):
@@ -200,6 +270,10 @@ async def dispatch(
         reply: str | None = handle_start(store, incoming, media_root=media_root)
     elif incoming.kind == "command" and incoming.command == "restart":
         reply = handle_restart(store, incoming, media_root=media_root)
+    elif incoming.kind == "other" and stage in _UNSUPPORTED_UPLOAD_TEXTS:
+        logger.info("Unsupported upload chat_id=%s stage=%s", chat_id, stage.value)
+        await safe_send_message(bot, chat_id, _UNSUPPORTED_UPLOAD_TEXTS[stage])
+        return None
     elif stage is Stage.SCRIPTING:
         if scripter is None:
             logger.warning("Update at SCRIPTING but no Scripter is configured")
@@ -237,6 +311,13 @@ async def dispatch(
         if interviewer is None:
             logger.warning("Update at INTERVIEW but no Interviewer is configured")
             return None
+        if conversion_tasks is not None and incoming.kind == "text":
+            interview_turn = _make_interview_turn(
+                store, incoming, interviewer=interviewer, send_message=send_message,
+                on_complete=after_interview,
+            )
+            conversion_tasks.start(chat_id, interview_turn)
+            return None
         reply = await orchestrator.handle_interview_update(
             store, incoming, interviewer=interviewer
         )
@@ -246,17 +327,32 @@ async def dispatch(
         if bouncer is None or interviewer is None:
             logger.warning("Photo received but a required dependency is not configured")
             return None
-        reply = await handle_photo_update(
-            store,
-            incoming,
-            bouncer=bouncer,
-            download=make_downloader(bot),
-            interviewer=interviewer,
-            media_root=media_root,
-        )
+        if conversion_tasks is None:
+            # In-line seam retained for the handler-level tests; the live app
+            # always supplies the registry, so intake never blocks the poller.
+            reply = await handle_photo_update(
+                store,
+                incoming,
+                bouncer=bouncer,
+                download=make_downloader(bot),
+                interviewer=interviewer,
+                media_root=media_root,
+            )
+        elif stage is not Stage.AWAITING_PHOTO:
+            reply = handle_photo_wrong_stage(store, incoming)
+        else:
+            intake = _make_photo_intake(
+                store, incoming, bouncer=bouncer,
+                download_bytes=download_bytes or make_memory_downloader(bot),
+                interviewer=interviewer, send_message=send_message, media_root=media_root,
+            )
+            conversion_tasks.start(chat_id, intake)
+            return None
     else:
+        # Metadata only: an unknown command is arbitrary user-supplied text.
         logger.warning(
-            "No handler for update kind=%s command=%s", incoming.kind, incoming.command
+            "No handler for update operation=dispatch chat_id=%s stage=%s kind=%s",
+            chat_id, stage.value, incoming.kind,
         )
         return None
 
@@ -277,6 +373,47 @@ async def dispatch(
     return reply
 
 
+def _make_photo_intake(
+    store: InMemorySessionStore,
+    incoming: ChatInput,
+    *,
+    bouncer: Bouncer,
+    download_bytes: early_flow.DownloadBytesFn,
+    interviewer: Interviewer,
+    send_message: early_flow.SendMessageFn,
+    media_root: Path | None,
+) -> Work:
+    """Bind one photo intake to the session version the registry assigns it."""
+
+    async def intake(version: int) -> None:
+        await early_flow.run_photo_intake(
+            store, incoming, bouncer=bouncer, download_bytes=download_bytes,
+            interviewer=interviewer, send_message=send_message, media_root=media_root,
+            session_version=version,
+        )
+
+    return intake
+
+
+def _make_interview_turn(
+    store: InMemorySessionStore,
+    incoming: ChatInput,
+    *,
+    interviewer: Interviewer,
+    send_message: early_flow.SendMessageFn,
+    on_complete: early_flow.ContinueFn,
+) -> Work:
+    """Bind one interview turn, including its downstream handoff, to a version."""
+
+    async def turn(version: int) -> None:
+        await early_flow.run_interview_turn(
+            store, incoming, interviewer=interviewer, send_message=send_message,
+            session_version=version, on_complete=on_complete,
+        )
+
+    return turn
+
+
 async def dispatch_safely(
     store: InMemorySessionStore,
     update: object,
@@ -293,6 +430,7 @@ async def dispatch_safely(
     send_photo: SendPhotoFn | None = None,
     media_root: Path | None = None,
     conversion_tasks: ConversionTasks | None = None,
+    download_bytes: early_flow.DownloadBytesFn | None = None,
 ) -> str | None:
     """Run :func:`dispatch`, delivering a friendly message if it raises.
 
@@ -315,13 +453,21 @@ async def dispatch_safely(
             send_photo=send_photo,
             media_root=media_root,
             conversion_tasks=conversion_tasks,
+            download_bytes=download_bytes,
         )
-    except Exception:
-        logger.exception("Unhandled error while handling update")
+    except Exception as exc:  # noqa: BLE001 - the user must never be left with silence
+        # Metadata only: a provider traceback can embed the request payload.
+        logger.error(
+            "Unhandled error while handling update operation=dispatch type=%s",
+            type(exc).__name__,
+        )
         try:
             incoming = extract_chat_input(update)
-        except Exception:
-            logger.debug("Could not resolve chat for friendly error", exc_info=True)
+        except Exception as resolve_exc:  # noqa: BLE001 - the friendly notice still matters
+            logger.debug(
+                "Could not resolve chat for friendly error type=%s",
+                type(resolve_exc).__name__,
+            )
             incoming = None
         if incoming is not None:
             await safe_send_message(bot, incoming.chat_id, FRIENDLY_ERROR)
@@ -329,13 +475,15 @@ async def dispatch_safely(
 
 
 async def _on_error(update: object, context: CallbackContext) -> None:
-    """Global backstop: log unhandled errors instead of crashing the poller."""
-    # PTB passes the exception on ``context.error``; log it explicitly with its
-    # traceback (``exc_info=<exception>``) rather than relying on ambient
-    # exception state, which is not active inside this error handler.
+    """Global backstop: log unhandled errors instead of crashing the poller.
+
+    PTB passes the exception on ``context.error``. Only its type is logged: a
+    traceback or message from the Gemini/Telegram clients can embed the request
+    payload (portrait bytes, questions, answers).
+    """
     logger.error(
-        "Unhandled error while processing update",
-        exc_info=context.error,
+        "Unhandled error while processing update operation=update_dispatch type=%s",
+        type(context.error).__name__,
     )
 
 
@@ -379,6 +527,7 @@ def build_application(
             send_photo=make_send_photo(context.bot),
             media_root=MEDIA_ROOT,
             conversion_tasks=conversion_tasks,
+            download_bytes=make_memory_downloader(context.bot),
         )
 
     application.add_handler(CommandHandler("start", _handle))
@@ -388,5 +537,8 @@ def build_application(
     # Catch-all for unknown commands so they reach dispatch (e.g. /foo mid-interview).
     # Registered last so it never shadows /start or /restart.
     application.add_handler(MessageHandler(filters.COMMAND, _handle))
+    # Final fallback so an unsupported upload is answered rather than dropped.
+    # Registered last, so it shadows none of the handlers above.
+    application.add_handler(MessageHandler(filters.ALL, _handle))
     application.add_error_handler(_on_error)
     return application

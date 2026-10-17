@@ -6,14 +6,26 @@ A Telegram bot that turns a selfie into an Attenborough-style wildlife mini-docu
 Upload a portrait photo in Telegram and the bot runs a five-stage pipeline:
 
 1. **Bouncer** — confirms the photo is a human (rejects non-humans with a humorous refusal).
-2. **Interviewer** — asks 5 to 7 questions about your quirks, habits, and personality.
+2. **Interviewer** — asks 6 questions about your quirks, habits, and personality.
 3. **Converter** — generates a hybrid-animal avatar from your photo plus those traits.
 4. **Scripter** — writes one dramatic nature-documentary narration paragraph.
 5. **Narrator** — renders that paragraph to audio and sends the finished mini-documentary back to the chat as an image plus a voiceover.
 
 Everything happens inside Telegram. There is no web frontend.
 
-> **Current status:** Features 1–5 are merged and phone tested; Feature 6 is in progress (phone test pending). The bot connects via long
+**Four of those five roles are Google ADK agents** (Bouncer, Interviewer, Converter,
+Scripter, all `LlmAgent` + `InMemoryRunner`). The Narrator is a direct `google-genai`
+TTS integration, not a fifth ADK agent. ADK runs the model calls; ordinary
+application code owns the stage machine, the per-chat interview history, deadlines
+and task ownership — there is no ADK parent agent. See the component and state
+diagrams in [`SPECS/TECH.md`](SPECS/TECH.md#pipeline-diagrams). (`telegram-arch.html`
+covers long polling versus webhooks only, not the agent pipeline.)
+
+> **Current status:** Features 1–6 are merged. Feature 6 (Narrator) was accepted at
+> `397bf94` and the user merged PR #6 as `b2d8803`, whose `main` tree matches that
+> accepted content. Feature 7 (submission readiness) is **in progress** on
+> `feature/2026-10-18-submission-readiness` and is **not accepted**: see
+> [Submission readiness](#submission-readiness-feature-7-in-progress). The bot connects via long
 > polling; `/start` and `/restart` greet, reset the chat, purge its temp media,
 > and ask for a photo. Send a portrait photo and the **Bouncer** — a Google ADK
 > `gemini-3.1-flash-lite` agent — confirms there's a human face, advancing the
@@ -103,11 +115,86 @@ sends are mocked and secrets stay out of the suite.
 The project contract lives in `SPECS/`:
 
 - `SPECS/MISSION.md` — what we're building, tone, the non-negotiable principles, and the definition of done.
-- `SPECS/TECH.md` — stack and architecture (long polling, Google ADK state machine, Gemini 3.1 models, resilience rules).
+- `SPECS/TECH.md` — stack and architecture (long polling, the four ADK roles plus the direct TTS integration, the application-owned stage machine, component and state diagrams, Gemini 3.1 models, resilience rules).
 - `SPECS/ROADMAP.md` — build order, one SDD loop per feature.
 
 ## Secrets
 Never hard-code, commit, or log secrets. `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` are read from `.env` only; `.env.example` documents the required keys.
+
+## Submission readiness (Feature 7, in progress)
+
+Branch `feature/2026-10-18-submission-readiness`. **Status: implemented, locally verified and independently reviewed;
+not Codio tested, not phone tested, not merged.** Nothing in
+this section is an acceptance claim.
+
+Specs and evidence ledger live in
+[`SPECS/2026-10-18-submission-readiness/`](SPECS/2026-10-18-submission-readiness):
+[requirements](SPECS/2026-10-18-submission-readiness/requirements.md),
+[architecture](SPECS/2026-10-18-submission-readiness/architecture.md),
+[plan](SPECS/2026-10-18-submission-readiness/plan.md),
+[validation](SPECS/2026-10-18-submission-readiness/validation.md) and the
+[summary quality review](SPECS/2026-10-18-submission-readiness/summary-review.md).
+
+### Verification status
+
+| Check | Status |
+| --- | --- |
+| Unmodified baseline at `b2d8803`: 795 tests passed in 8.53s, Ruff + mypy clean on 21 files (Windows, Python 3.13.12, real FFmpeg, network blocked) | Passed (baseline only, not this change) |
+| Feature 6 native Codio gate and phone checks at `397bf94` | Passed (historical, Feature 6 only) |
+| Final local readiness test and hook gate | 906 passed in 10.88s; Ruff clean, mypy clean on 22 files (Windows Python 3.13.12, real FFmpeg, network blocked), after review corrections |
+| Independent source review of the readiness change | Complete: both blockers corrected, no remaining source-level defects found |
+| Native Codio Python 3.11 `scripts/test` + `scripts/hooks` on the readiness build | Pending |
+| Phone stress checklist on the readiness build | Pending |
+| Readiness PR approved and merged by the user | Pending |
+
+Rubric-to-evidence mapping is in
+[validation.md](SPECS/2026-10-18-submission-readiness/validation.md#rubric-to-evidence-map);
+summary-depth evidence is in
+[summary-review.md](SPECS/2026-10-18-submission-readiness/summary-review.md).
+Automated tests are offline with every Gemini and Telegram call mocked, so they
+verify contracts and wiring; **phone checks are the only evidence of model prose,
+avatar and voice quality.**
+
+### Honest limitations
+
+- **Photo intake cap.** Portrait intake applies a 10 MiB admission cap before
+  validation and before publishing to the chat's `photo.jpg`. The installed Telegram
+  SDK buffers the whole response in `request.retrieve` before writing the supplied
+  sink, so this caps what is *published*, not transport memory — even with a capped
+  `BytesIO` sink it is not a streaming limit. No custom HTTP downloader is in scope.
+- **Privacy scope.** Logging work covers new and touched early-stage paths
+  (operation, chat, stage and exception type only). This is **not** a whole-repo
+  privacy guarantee; logs emitted inside the SDK/transport boundary are reviewed, not
+  controlled here. **Five** baseline privacy tests have explicit user approval for
+  leakage-assertion changes, and the assertion sweep (1072 assertions, 127 logging-related) found no
+  further assertions of that class. Two further baseline tests receive integration
+  fixture/synchronisation adaptations only: every assertion in them is preserved.
+  No other baseline assertion changes.
+- **Delivery may duplicate after a manual retry; no exactly-once guarantee.** A
+  Telegram send already accepted cannot be recalled, so a lost acknowledgement can
+  duplicate an externally delivered message when the user retries. Equally, a send
+  that fails may never arrive at all: nothing here guarantees delivery either way.
+- **Reset versus an uncooperative provider.** Reset invalidates the session before
+  cancelling, so late results are discarded, but a dependency that ignores
+  cancellation cannot be forcibly killed by asyncio; shutdown reports pending work
+  instead of claiming a clean exit. Local JPEG validation/publication and reset
+  directory cleanup are synchronous filesystem work; slow or stalled storage has
+  not been simulated, so responsiveness does not imply a hard wall-clock bound.
+- **Active duplicate answers are not queued.** An answer sent while an interview
+  worker is active is ignored without a separate busy message. Wait for the next
+  question before replying.
+- **Registry change is real integration.** In the merged baseline `b2d8803`, photo
+  intake and interview turns await external work directly inside the sequential
+  handler, with no registry ownership. Giving them ownership is new wiring at those
+  entry points, not a config switch; the single existing `ConversionTasks` registry
+  and its lifecycle rules are retained. (This describes the baseline, not the current
+  state of this branch, which changes as implementation lands.)
+- **Same worker for the sixth answer.** The sixth-answer update starts exactly one
+  worker, and summary, Converter, Scripter and Narrator continue in that same asyncio
+  task and session version — no second `conversion_tasks.start`.
+- **Summary prompts are unchanged** on this branch. `tests/test_readiness_summary.py`
+  mocks the ADK call, so it proves history, ordering, schema and the
+  "do not invent facts" instruction boundary, not live summary quality.
 
 ## Converter hardening (Feature 4)
 Conversion, scripting and narration share one tracked per-chat background task. Telegram update
@@ -147,7 +234,7 @@ can cause a duplicate on retry; delivery is not exactly-once.
 
 Feature 5 passed Codio phone testing and PR #5 was merged at `0dec595`.
 
-## Narrator (Feature 6, in progress)
+## Narrator (Feature 6, merged)
 
 The Narrator reads only stored `narration_text`, using the direct asynchronous
 Gemini SDK and `gemini-3.1-flash-tts-preview`, fixed Charon voice. No ADK agent,
@@ -178,3 +265,9 @@ Offline tests mock all Gemini and Telegram traffic; codec tests use local FFmpeg
 without network and must not be skipped in the final gates. See
 `SPECS/2026-10-18-narrator/plan.md` for acceptance tests and the Codio phone checklist.
 One Feature 6 PR, phone test before merge, no automated merge.
+
+Feature 6 evidence (historical, for Feature 6 only): native Codio Python 3.11.2,
+795 tests passed, Ruff and mypy clean on 21 files; the user confirmed full voice
+playback, two runs in one process, terminal `DONE` and both reset commands during
+narration. PR #6 was merged by the user as `b2d8803`, and its `main` tree matches
+the accepted `397bf94` content. These results are Feature 6 evidence only.

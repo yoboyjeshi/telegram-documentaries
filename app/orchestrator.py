@@ -19,8 +19,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from app.audio_encoding import ENCODING_TIMEOUT_SECONDS, encode_voice, validate_voice
 from app.audio_format import MAX_AUDIO_BYTES, NarrationAudio, normalize_audio
 from app.converter import Converter
@@ -52,30 +50,21 @@ from app.telegram_adapter import ChatInput
 
 logger = logging.getLogger("telegram_documentaries")
 
-# A capped, single-line message keeps secret/answer-bearing payloads out of logs;
-# only used for non-validation failures (a ValidationError is logged by type).
-_FAILURE_MESSAGE_MAX = 200
-
 # The photo-send capability injected from bot.py (mirrors photo_flow's DownloadFn).
 SendPhotoFn = Callable[[int, Path, str], Awaitable[bool]]
 
 
 def _log_interviewer_failure(chat_id: int, exc: Exception) -> None:
-    """Log an interviewer failure as type (+ short message) only.
+    """Log an interviewer failure as safe metadata only.
 
-    A full traceback can embed the request payload (history/answers), so we
-    deliberately log no ``exc_info`` and never the raw answer or summary text.
-    A ``ValidationError`` is logged as its type alone: its message embeds
-    ``input_value`` -- the raw model output, which can carry answer/summary text.
+    Neither a traceback nor the exception message is logged: a provider error
+    can embed the request payload (the history, an answer) or the raw model
+    output, so only the operation and the exception type are recorded.
     """
-    if isinstance(exc, ValidationError):
-        logger.error("Interviewer failed chat_id=%s: %s", chat_id, type(exc).__name__)
-        return
     logger.error(
-        "Interviewer failed chat_id=%s: %s: %s",
+        "Interviewer failed chat_id=%s operation=interviewer type=%s",
         chat_id,
         type(exc).__name__,
-        str(exc)[:_FAILURE_MESSAGE_MAX],
     )
 
 

@@ -65,8 +65,8 @@ def _stage_from(args: tuple[Any, ...], chat_id: int | None) -> str | None:
         return None
     try:
         state = store.get(chat_id)
-    except Exception:
-        logger.debug("Could not read session stage for logging", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - metadata-only fallback; cancellation propagates
+        logger.debug("Could not read session stage for logging type=%s", type(exc).__name__)
         return None
     stage = getattr(state, "stage", None)
     if stage is None:
@@ -117,8 +117,8 @@ def guard_errors(func: F) -> F:
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return await func(*args, **kwargs)
-            except Exception:
-                logger.exception("handler=%s failed", func.__name__)
+            except Exception as exc:  # noqa: BLE001 - metadata-only fallback; cancellation propagates
+                logger.error("handler=%s failed type=%s", func.__name__, type(exc).__name__)
                 return FRIENDLY_ERROR
 
         return cast(F, async_wrapper)
@@ -127,8 +127,8 @@ def guard_errors(func: F) -> F:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
-        except Exception:
-            logger.exception("handler=%s failed", func.__name__)
+        except Exception as exc:  # noqa: BLE001 - metadata-only fallback; cancellation propagates
+            logger.error("handler=%s failed type=%s", func.__name__, type(exc).__name__)
             return FRIENDLY_ERROR
 
     return cast(F, wrapper)

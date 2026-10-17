@@ -1,10 +1,9 @@
 """Two complete runs through actual registered handlers, entirely offline."""
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from image_fixtures import PNG
+from image_fixtures import JPEG, PNG
 from telegram import Update, User
 
 from app import bot as wiring
@@ -43,10 +42,12 @@ def test_two_registered_handler_pipelines_to_done(tmp_path, monkeypatch):
         monkeypatch.setattr(orchestrator, "validate_voice", AsyncMock(return_value=None))
         order = []
 
-        async def download(custom_path):
-            Path(custom_path).write_bytes(b"offline portrait")
+        async def download(sink):
+            # The live wiring fetches the portrait into memory and admits only
+            # genuinely decodable JPEG bytes, so the offline file is a real one.
+            sink.write(JPEG)
 
-        transport.get_file.return_value.download_to_drive.side_effect = download
+        transport.get_file.return_value.download_to_memory.side_effect = download
 
         async def photo(**kwargs):
             assert kwargs["photo"].read_bytes() == PNG
@@ -96,10 +97,13 @@ def test_two_registered_handler_pipelines_to_done(tmp_path, monkeypatch):
             assert store.get(1).narration_text is None
             assert not (tmp_path / "1").exists()
             await route(photo=True)
+            # Photo intake is a tracked worker: drain it, as the sequential
+            # poller does, before asserting the stage it commits.
+            await asyncio.wait_for(registry.wait(), 2)
             assert store.get(1).stage is Stage.INTERVIEW
             for _ in range(TOTAL_QUESTIONS):
                 await route("An offline answer")
-            await asyncio.wait_for(registry.wait(), 2)
+                await asyncio.wait_for(registry.wait(), 2)
             assert store.get(1).stage is Stage.DONE
             assert store.get(1).narration_text == narration
             assert not list(tmp_path.rglob("*.ogg"))

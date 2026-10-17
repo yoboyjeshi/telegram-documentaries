@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from image_fixtures import PNG
+from image_fixtures import JPEG, PNG
 
 from app.bot import dispatch
 from app.conversion_tasks import ConversionTasks
@@ -63,8 +63,6 @@ def test_final_answer_flows_to_narrating_once_without_audio(tmp_path, background
 
 def test_two_complete_offline_runs_from_portrait_without_reboot(tmp_path):
     async def run():
-        from pathlib import Path
-
         from app.bouncer import BouncerVerdict
         from app.interviewer import InterviewQuestion
         from app.scripter import NarrationScript
@@ -77,10 +75,11 @@ def test_two_complete_offline_runs_from_portrait_without_reboot(tmp_path):
         converter.generate_avatar.return_value = PNG
         narration = "A quietly determined creature greets the evening, ready for another adventure."
         scripter.write_script.return_value = NarrationScript(text=narration)
-        async def download(custom_path):
-            Path(custom_path).write_bytes(b"offline portrait")
+        async def download(sink):
+            # Intake fetches into memory and admits decodable JPEG bytes only.
+            sink.write(JPEG)
         telegram_file = AsyncMock()
-        telegram_file.download_to_drive.side_effect = download
+        telegram_file.download_to_memory.side_effect = download
         bot.get_file.return_value = telegram_file
         order = []
         async def photo(chat, path, caption):
@@ -102,9 +101,14 @@ def test_two_complete_offline_runs_from_portrait_without_reboot(tmp_path):
             assert store.get(1).narration_text is None
             await dispatch(store, update(photo=[SimpleNamespace(file_id="portrait", file_size=100)]),
                            bot, **kwargs)
+            # Intake is a tracked worker: drain it before asserting its commit.
+            await asyncio.wait_for(registry.wait(), 1)
             assert store.get(1).stage is Stage.INTERVIEW
             for _ in range(TOTAL_QUESTIONS):
                 await dispatch(store, update("An offline answer"), bot, **kwargs)
+                # Each interview turn is a tracked worker: drain it before the
+                # next answer, exactly as the sequential poller would.
+                await asyncio.wait_for(registry.wait(), 1)
             await asyncio.wait_for(registry.wait(), 1)
             assert store.get(1).stage is Stage.NARRATING
             assert store.get(1).narration_text == narration
