@@ -30,7 +30,7 @@ GREETING to AWAITING_PHOTO to BOUNCER_CHECK to INTERVIEW (5 to 7 Q) to CONVERTIN
 Besides reset-to-GREETING, the only non-ordered move allowed is the Bouncer retry edge **BOUNCER_CHECK -> AWAITING_PHOTO** (a rejected photo returns the chat to awaiting a photo); every other non-ordered move stays illegal (`IllegalTransitionError`, fail loud).
 
 ## Resilience (point-bearing, do not skip)
-1. /restart and /start full reset: cancel active session, purge all temp files for that chat (photo, PNG, audio), re-init orchestrator memory to GREETING. Must work mid-interview, mid-generation, any stage. No process reboot ever.
+1. /restart and /start full reset: cancel active session, purge all temp files for that chat (photo, PNG, audio), re-init orchestrator memory to AWAITING_PHOTO (the reset reply asks for a photo). Must work mid-interview, mid-generation, any stage. No process reboot ever.
 2. Try/except around every external call (every Telegram send/receive and every Gemini call). On failure: friendly message, offer retry, keep the process alive.
 3. Edge cases (build these): photo sent during interview (gently redirect, no crash); text sent during Bouncer/awaiting-photo (prompt for a photo); Gemini timeout/error (caught, user notified, retry offered).
 4. Temp-media hygiene: namespace each chat's media by chat_id; delete on completion AND on reset.

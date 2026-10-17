@@ -111,3 +111,13 @@ requirements.txt      # **+ google-adk (pinned to resolved major)**
 - **ADK app/session identifiers are module constants** (`BOUNCER_APP_NAME`, user/session id `"bouncer"`) — no per-chat session is needed for a stateless single-shot inspection.
 - **`AdkBouncer` sets `GOOGLE_API_KEY` from the supplied key via `os.environ.setdefault(...)`** immediately before the lazy ADK imports, so the ADK/Gemini client can authenticate without the key ever being logged.
 - No scope drift: no Interviewer/Converter/Scripter/Narrator code, no interview questions, no new stages.
+- **Post-verification hardening (`192e8d7`, `82afd69`), recorded here as a deviation:**
+  - The global PTB error handler now logs `exc_info=context.error` (it previously used
+    `exc_info=True` outside an `except` block, yielding `NoneType: None`).
+  - **Bouncer-failure logging deliberately deviates from `requirements.md`'s
+    "log the traceback at ERROR":** it logs exception *type + message only*,
+    because a full traceback can embed the request payload (image bytes) from the
+    ADK/Gemini client — the secret-hygiene rule wins over the traceback rule.
+    Download failures still log the full traceback (no image bytes in that path).
+  - The adapter's photo-size fallback and the pre-existing-`GOOGLE_API_KEY` path are
+    now logged/warned instead of being silently swallowed.

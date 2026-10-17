@@ -2,14 +2,16 @@
 
 How we know Feature 2 is correct and can be merged.
 
-Verification date: **2026-10-11**. Branch: `feature/2026-10-11-bouncer`.
-Status: **automated verification complete** — all automated gates green and unit
-coverage in place. The **manual phone test** and the **PR merge** remain for a
-human (marked unchecked below). Deviations are recorded in `plan.md`
-("Implementation deviations").
+Verification date: **2026-10-11**; docs reconciled **2026-10-17**. Branch: `feature/2026-10-11-bouncer`.
+Status: **automated verification complete** — all automated gates green (95
+unit tests) and coverage in place. Post-verification fixes landed on the branch
+(see "Post-verification commits" below). The **manual phone test** and the
+**PR merge** remain for a human (marked unchecked below); the phone test has
+since been reported passing by the user, but it was not re-verified here.
+Deviations are recorded in `plan.md` ("Implementation deviations").
 
 ## 1. Automated gates
-- [x] `scripts/test` passes (all unit tests green, **no network**). — 88 passed.
+- [x] `scripts/test` passes (all unit tests green, **no network**). — 95 passed.
 - [x] `scripts/hooks` passes (`ruff` clean, `mypy` clean). — 12 source files.
 - [x] Tests were written first (Red) and cover, at minimum:
   - [x] Adapter photo contract: photo -> `kind="photo"` + largest `file_id` + `int` chat_id; text/other/foreign unchanged. (`tests/test_adapter.py`)
@@ -21,6 +23,7 @@ human (marked unchecked below). Deviations are recorded in `plan.md`
   - [x] Reset purge: `/start` and `/restart` purge the chat's temp media and end at `AWAITING_PHOTO`. (`tests/test_handlers.py`)
   - [x] Wiring: a `PHOTO` handler is registered; dispatch routes photo vs text-at-awaiting-photo. (`tests/test_bot.py`)
   - [x] Logging hygiene: neither `GEMINI_API_KEY` nor image bytes appear in logs. (`tests/test_logging.py`, `tests/test_bouncer.py`, `tests/test_photo_flow.py`)
+  - [x] Post-verification regressions: global `_on_error` logs the real exception via `context.error` (no `NoneType: None`); the photo-size fallback logs (no silent swallow); a Bouncer failure logs type + message only and never image bytes; a pre-existing `GOOGLE_API_KEY` warns without logging either key value. (`tests/test_bot.py`, `tests/test_adapter.py`, `tests/test_bouncer.py`, `tests/test_photo_flow.py`)
 
 ## 2. Manual phone test (long polling)
 With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, then from a phone:
@@ -35,6 +38,8 @@ With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, th
 
 > Not performed in this verification environment (no phone / live Gemini here);
 > covered for the pure logic by unit tests, but the on-device checks need a human.
+> The user has since reported the phone test passing, but this box is left for the
+> human to tick.
 
 ## 3. Scope guards (YAGNI)
 - [x] **No** Interviewer / Converter / Scripter / Narrator code; **no interview questions**.
@@ -69,3 +74,33 @@ With a real bot token + `GEMINI_API_KEY` in `.env`, run `python -m app.main`, th
 - [x] Scope guards hold; no secrets committed.
 - [x] Code review raised no blocking findings. (Self-review by the build orchestrator: the code-reviewer subagent was unavailable, so the same review scope — correctness, state edge, media hygiene, secret handling, boundary validation, test gaps, ruff/mypy — was performed inline; no blocking findings.)
 - [ ] PR opened against `main` (not merged by the build agent).
+
+## 9. Post-verification commits
+- **`192e8d7`** — *Log the real exception in the global error handler.* The PTB
+  `_on_error` handler logged `exc_info=True` outside an `except` block, so
+  unhandled update errors surfaced as the useless `NoneType: None`; it now logs
+  `exc_info=context.error`. A regression test asserts the record carries the real
+  exception. (Surfaced while phone-testing: two polling instances caused a
+  `Conflict` that could not be read.)
+- **`82afd69`** — *Log photo-size fallback and harden Bouncer failure logging.*
+  The adapter's photo-size fallback no longer swallows silently; Bouncer failures
+  log exception **type + message only**, so image bytes chained into the
+  ADK/Gemini payload cannot reach the log; `_ensure_google_api_key` warns when a
+  pre-existing `GOOGLE_API_KEY` takes precedence (without logging either value).
+  New edge-case tests cover empty/all-`None` photo sizes, the real key-logging
+  path, and a long image-bytes sentinel.
+- **`074f520` + `ec93724`** — net-zero `# noqa: BLE001` churn: an unused directive
+  was dropped and then restored (ruff's `BLE001` **is** enabled, so the directive
+  is required for the intentional blind except around the Bouncer call). The final
+  tree matches the hardened design above.
+- **H1/H2 RCA sweep (lost traceback / silent fallback class):** no other siblings
+  found. Every other `exc_info=True` / `logger.exception` site
+  (`app/photo_flow.py`, `app/telegram_adapter.py`, `app/logging_config.py`,
+  `app/bot.py`) is inside an `except` block, so its traceback is captured
+  correctly; the only outside-`except` logger is `_on_error`, now fixed by passing
+  `context.error` explicitly. The two silent-fallback paths found (adapter photo
+  size, pre-existing `GOOGLE_API_KEY`) were both made observable in `82afd69`.
+- **Reconciliation:** automated gates re-run green on this tree — `scripts/test`
+  **95 passed**, `scripts/hooks` clean (ruff + mypy, 12 source files). The
+  manual-phone-test and PR-merge boxes in section 8 are deliberately left
+  unchecked: they belong to the human/build agent, not this verification.
