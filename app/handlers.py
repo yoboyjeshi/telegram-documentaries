@@ -27,9 +27,37 @@ PHOTO_REDIRECT_TEXT = (
     "Let's take this one step at a time -- send /start when you're ready to begin."
 )
 
-INTERVIEW_READY_TEXT = (
+INTERVIEW_INTRO = (
     "Splendid -- you're exactly the sort of specimen we're looking for! "
-    "The interview is coming up next."
+    "Let's begin the interview."
+)
+
+INTERVIEW_PHOTO_REDIRECT_TEXT = (
+    "I appreciate the enthusiasm, but let's keep to words for now -- "
+    "please answer the question in a message."
+)
+
+INTERVIEW_REPROMPT_TEXT = (
+    "I didn't quite catch that -- please type your answer to the question."
+)
+
+INTERVIEW_COMPLETE_TEXT = (
+    "Marvellous -- that's the full interview and I have everything I need. "
+    "Our crew is preparing your documentary next."
+)
+
+INTERVIEW_FAILURE_TEXT = (
+    "My interviewer is having a moment -- please send your answer again."
+)
+
+INTERVIEW_UNKNOWN_COMMAND_TEXT = (
+    "That isn't a command I recognise -- just answer the question, "
+    "or use /restart to start over."
+)
+
+INTERVIEW_OTHER_REDIRECT_TEXT = (
+    "How intriguing, but this interview is word-based -- "
+    "please answer the question in a message."
 )
 
 PHOTO_DOWNLOAD_FAILURE_TEXT = "I couldn't fetch that photo just now. Please send it again."
@@ -83,10 +111,14 @@ def handle_photo_wrong_stage(store: InMemorySessionStore, incoming: ChatInput) -
 @guard_errors
 def apply_bouncer_verdict(
     store: InMemorySessionStore, chat_id: int, verdict: BouncerVerdict
-) -> str:
-    """Advance to ``INTERVIEW`` on a human; otherwise refuse and await a photo."""
+) -> str | None:
+    """Advance to ``INTERVIEW`` on a human; otherwise refuse and await a photo.
+
+    A human verdict returns ``None``: the caller starts the interview (the entry
+    reply is the intro plus question 1, which needs the interviewer).
+    """
     if verdict.is_human:
         store.set_stage(chat_id, Stage.INTERVIEW)
-        return INTERVIEW_READY_TEXT
+        return None
     store.set_stage(chat_id, Stage.AWAITING_PHOTO)
     return refusal_text(chat_id)

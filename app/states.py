@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Stage(str, Enum):
@@ -70,8 +70,43 @@ def assert_transition(src: Stage, dst: Stage) -> None:
         raise IllegalTransitionError(f"Illegal transition: {src.value} -> {dst.value}")
 
 
+class InterviewAnswer(BaseModel):
+    """One completed interview Q/A pair."""
+
+    question: str
+    answer: str
+
+
+class TraitSummary(BaseModel):
+    """Concise synthesis of the collected answers (stored for later stages)."""
+
+    summary: str
+    traits: list[str] = Field(default_factory=list)
+
+
+class InterviewState(BaseModel):
+    """Progress of one interview: collected Q/A pairs, the pending question, and
+    (once complete) the trait summary. One interview per chat."""
+
+    answers: list[InterviewAnswer] = Field(default_factory=list)
+    pending_question: str | None = None
+    summary: TraitSummary | None = None
+
+    def record(self, answer: str) -> None:
+        """Pair the pending question with ``answer``, then clear the pending slot.
+
+        Fails loud if there is no pending question to pair with: recording an
+        orphan answer would silently corrupt the interview history.
+        """
+        if self.pending_question is None:
+            raise RuntimeError("Cannot record an interview answer: no pending question.")
+        self.answers.append(InterviewAnswer(question=self.pending_question, answer=answer))
+        self.pending_question = None
+
+
 class SessionState(BaseModel):
     """Per-chat session state. One instance per chat id."""
 
     chat_id: int
     stage: Stage = Stage.GREETING
+    interview: InterviewState | None = None

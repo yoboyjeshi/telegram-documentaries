@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.session_store import InMemorySessionStore
-from app.states import IllegalTransitionError, Stage
+from app.states import IllegalTransitionError, InterviewState, Stage, TraitSummary
 
 
 def test_unknown_chat_is_created_in_greeting() -> None:
@@ -44,3 +44,18 @@ def test_set_stage_enforces_transition_rules() -> None:
     assert store.set_stage(1, Stage.AWAITING_PHOTO).stage is Stage.AWAITING_PHOTO
     with pytest.raises(IllegalTransitionError):
         store.set_stage(1, Stage.INTERVIEW)
+
+
+def test_reset_clears_interview_state() -> None:
+    store = InMemorySessionStore()
+    state = store.get(1)
+    state.stage = Stage.INTERVIEW
+    state.interview = InterviewState(pending_question="q1")
+    state.interview.record("a1")
+    state.interview.pending_question = "q2"
+    state.interview.summary = TraitSummary(summary="so far so good")
+
+    store.reset(1)
+
+    assert state.stage is Stage.GREETING
+    assert state.interview is None

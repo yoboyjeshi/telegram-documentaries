@@ -7,8 +7,11 @@ import pytest
 from app.states import (
     PIPELINE_ORDER,
     IllegalTransitionError,
+    InterviewAnswer,
+    InterviewState,
     SessionState,
     Stage,
+    TraitSummary,
     assert_transition,
     can_transition,
     next_stage,
@@ -77,3 +80,57 @@ def test_unrelated_backward_moves_stay_illegal() -> None:
         assert_transition(Stage.INTERVIEW, Stage.AWAITING_PHOTO)
     with pytest.raises(IllegalTransitionError):
         assert_transition(Stage.CONVERTING, Stage.BOUNCER_CHECK)
+
+
+def test_trait_summary_schema() -> None:
+    summary = TraitSummary(summary="A bold explorer.", traits=["brave", "curious"])
+    assert summary.summary == "A bold explorer."
+    assert summary.traits == ["brave", "curious"]
+
+
+def test_trait_summary_defaults_to_empty_traits() -> None:
+    summary = TraitSummary(summary="A bold explorer.")
+    assert summary.traits == []
+
+
+def test_interview_answer_pairs_question_and_answer() -> None:
+    pair = InterviewAnswer(question="Favourite snack?", answer="Cheese")
+    assert pair.question == "Favourite snack?"
+    assert pair.answer == "Cheese"
+
+
+def test_interview_state_defaults() -> None:
+    state = InterviewState()
+    assert state.answers == []
+    assert state.pending_question is None
+    assert state.summary is None
+
+
+def test_interview_state_instances_do_not_share_defaults() -> None:
+    a, b = InterviewState(), InterviewState()
+    a.answers.append(InterviewAnswer(question="q", answer="a"))
+    a.pending_question = "q"
+    a.summary = TraitSummary(summary="s")
+    assert b.answers == []
+    assert b.pending_question is None
+    assert b.summary is None
+
+
+def test_interview_state_record_pairs_pending_question_and_clears_pending() -> None:
+    state = InterviewState(pending_question="Favourite snack?")
+    state.record("Cheese")
+    assert len(state.answers) == 1
+    assert state.answers[0].question == "Favourite snack?"
+    assert state.answers[0].answer == "Cheese"
+    assert state.pending_question is None
+
+
+def test_interview_state_record_fails_loud_without_pending_question() -> None:
+    state = InterviewState()
+    with pytest.raises(RuntimeError):
+        state.record("orphan answer")
+
+
+def test_session_state_interview_defaults_to_none() -> None:
+    state = SessionState(chat_id=1)
+    assert state.interview is None
